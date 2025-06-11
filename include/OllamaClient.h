@@ -15,7 +15,7 @@ public:
     ~OllamaClient();
 
     // Sends a prompt to the Ollama model and returns the response.
-    std::string generate(const std::string& prompt);
+    std::string generate(const std::string& system_prompt, const std::string& user_prompt);
 
 private:
     std::string model_name_;

@@ -51,14 +51,15 @@ OllamaClient::OllamaClient(const std::string &host, const std::string &model_nam
 OllamaClient::~OllamaClient() = default;
 
 
-std::string OllamaClient::generate(const std::string &prompt) {
+std::string OllamaClient::generate(const std::string& system_prompt, const std::string& user_prompt) {
     json payload = {
         {"model", model_name_},
-        {"prompt", prompt},
+        {"system", system_prompt},
+        {"prompt", user_prompt},
         {"stream", false}
     };
 
-    std::cout << "--- Sending to Ollama (" << model_name_ << "): \"" << prompt << "\"" << std::endl;
+    // std::cout << "--- Sending to Ollama (" << model_name_ << "): \"" << prompt << "\"" << std::endl;
 
     auto res = client_->Post("/api/generate", payload.dump(), "application/json");
 

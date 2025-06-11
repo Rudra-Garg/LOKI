@@ -14,10 +14,13 @@
 #include <atomic>
 #define MINIAUDIO_IMPLEMENTATION
 #include "miniaudio.h"
-#include "OllamaClient.h"
+
 #include "pv_porcupine.h"
 #include "whisper.h"
 #include "Config.h"
+#include "OllamaClient.h"
+#include "intent/IntentClassifier.h"
+#include "nlohmann/json.hpp"
 
 // --- VAD Configuration ---
 constexpr int SILENT_FRAMES_AFTER_SPEECH = 40;
@@ -187,6 +190,7 @@ int main() {
     const float VAD_THRESHOLD = config.get_float("VAD_THRESHOLD", 0.01f);
     const std::string OLLAMA_HOST = config.get("OLLAMA_HOST", "http://localhost:11434");
     const std::string OLLAMA_MODEL = config.get("OLLAMA_MODEL", "tinylama");
+
     AppData app_data;
     app_data.vad_threshold = VAD_THRESHOLD;
 
@@ -216,7 +220,10 @@ int main() {
     }
     std::cout << "Whisper initialized successfully." << std::endl;
 
+    // --- New Architecture Setup ---
     OllamaClient ollama_client(OLLAMA_HOST, OLLAMA_MODEL);
+    IntentClassifier intent_classifier(ollama_client);
+    // ---
 
     ma_device_config deviceConfig = ma_device_config_init(ma_device_type_capture);
     deviceConfig.capture.format = ma_format_f32;
@@ -237,7 +244,7 @@ int main() {
         return -1;
     }
     std::cout << "Using device: " << device.capture.name << std::endl;
-    std::cout << "\n<<< Waiting for wake word ('Hey Loki')... Press Enter to stop." << std::endl;
+    std::cout << "\n<<< Waiting for wake word ('Hey Loki')..." << std::endl;
 
     // Set up non-blocking input check
     std::atomic<bool> should_stop{false};
@@ -263,47 +270,43 @@ int main() {
         // --- End of Critical Section ---
 
         if (ready_to_process) {
-            std::cout << "DEBUG: Starting audio processing..." << std::endl;
-            std::cout.flush();
-
             const int audio_ms = static_cast<int>(audio_to_process.size() / (pv_sample_rate() / 1000));
             std::cout << "DEBUG: Processing " << audio_ms << "ms of audio (" << audio_to_process.size() << " samples)."
                     << std::endl;
-            std::cout.flush();
 
             if (audio_ms > MIN_COMMAND_MS) {
-                std::cout << "DEBUG: Audio duration is sufficient, starting Whisper..." << std::endl;
-                std::cout.flush();
+                std::string transcription = app_data.whisper->process_audio(audio_to_process);
 
-                // SKIP FILE SAVING FOR NOW
-                // save_to_wav(wav_filename, audio_to_process);
-
-                std::string result;
-                try {
-                    std::cout << "DEBUG: Calling whisper->process_audio()..." << std::endl;
-                    std::cout.flush();
-
-                    result = app_data.whisper->process_audio(audio_to_process);
-
-                    std::cout << "DEBUG: Whisper call completed successfully!" << std::endl;
-                    std::cout.flush();
-                } catch (const std::exception &e) {
-                    std::cerr << "ERROR: Whisper processing failed: " << e.what() << std::endl;
-                    result = "";
-                }
-
-                if (result.empty()) {
+                if (transcription.empty()) {
                     std::cout << ">>> Transcription: [EMPTY]" << std::endl;
                 } else {
-                    std::cout << ">>> Transcription: " << result << std::endl;
-                    std::string ollama_response = ollama_client.generate(result);
-                    std::cout << "\n<<< Loki says: " << ollama_response << std::endl;
+                    std::cout << ">>> Heard: " << transcription << std::endl;
+
+                    // --- Classify the intent ---
+                    IntentClassifier::Intent intent = intent_classifier.classify(transcription);
+
+                    std::cout << "\n<<< Intent Recognized >>>" << std::endl;
+                    std::cout << "  Type:       " << intent.type << std::endl;
+                    std::cout << "  Action:     " << intent.action << std::endl;
+                    std::cout << "  Confidence: " << std::fixed << std::setprecision(2) << intent.confidence <<
+                            std::endl;
+                    std::cout << "  Parameters: " << intent.parameters.dump(2) << std::endl;
+
+                    // This is where the AgentManager will eventually go.
+                    // For now, we can add a simple confidence check.
+                    if (intent.confidence < 0.7) {
+                        std::cout << "\nLOKI: I'm not very confident about that. Could you please rephrase?" <<
+                                std::endl;
+                    } else {
+                        std::cout << "\nACTION: (Routing to agent for type '" << intent.type << "' would happen here)"
+                                << std::endl;
+                    }
                 }
             } else {
                 std::cout << ">>> No command recorded (audio too short: " << audio_ms << "ms < " << MIN_COMMAND_MS <<
                         "ms)." << std::endl;
             }
-            std::cout << "\n<<< Waiting for wake word..." << std::endl;
+            std::cout << "\n<<< Waiting for wake word ('Hey Loki')..." << std::endl;
             std::cout.flush();
         }
 

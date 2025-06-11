@@ -24,6 +24,7 @@ add_executable(${PROJECT_NAME}
         src/whisper.cpp
         src/Config.cpp
         src/OllamaClient.cpp
+        src/intent/IntentClassifier.cpp
 )
 
 
