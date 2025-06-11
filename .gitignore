@@ -1,0 +1,68 @@
+# ==================================================================================
+# Gitignore for the Loki C++ Voice Assistant Project
+# ==================================================================================
+
+# ----------------------------------------------------------------------------------
+# Sensitive Information - DO NOT COMMIT THESE FILES
+# ----------------------------------------------------------------------------------
+# The .env file contains secrets like the Picovoice Access Key.
+# It should NEVER be committed to version control.
+# Each developer should create their own .env file from a template (e.g., .env.example).
+/.env
+
+
+# ----------------------------------------------------------------------------------
+# Build artifacts and compiled output
+# ----------------------------------------------------------------------------------
+# CMake build directories (e.g., cmake-build-debug, cmake-build-release)
+/cmake-build-*/
+
+# Binaries and libraries
+*.exe
+*.dll
+*.so
+*.dylib
+*.a
+*.lib
+
+# CMake files
+CMakeCache.txt
+CMakeFiles/
+Makefile
+cmake_install.cmake
+compile_commands.json
+
+
+# ----------------------------------------------------------------------------------
+# IDE and Editor-specific files
+# ----------------------------------------------------------------------------------
+# JetBrains / CLion
+# The .idea folder contains user-specific settings. While some files can be shared,
+# it's safest to ignore the whole directory by default.
+/.idea/
+
+# Visual Studio Code
+/.vscode/
+
+# Visual Studio
+/.vs/
+*.suo
+*.user
+
+
+# ----------------------------------------------------------------------------------
+# Logs and Temporary Files
+# ----------------------------------------------------------------------------------
+# Directory for saving debug audio recordings
+/debug_audio/
+
+# General log files
+*.log
+*.log.*
+
+
+# ----------------------------------------------------------------------------------
+# Files generated for repository analysis (from our session)
+# ----------------------------------------------------------------------------------
+repo_contents.txt
+tree.txt
