@@ -66,3 +66,4 @@ compile_commands.json
 # ----------------------------------------------------------------------------------
 repo_contents.txt
 tree.txt
+/models/
