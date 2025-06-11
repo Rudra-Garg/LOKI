@@ -39,8 +39,8 @@ compile_commands.json
 # JetBrains / CLion
 # The .idea folder contains user-specific settings. While some files can be shared,
 # it's safest to ignore the whole directory by default.
-/.idea/
 
+.idea
 # Visual Studio Code
 /.vscode/
 
