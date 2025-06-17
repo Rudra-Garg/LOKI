@@ -1,8 +1,8 @@
-#include "whisper.h" // Our wrapper's header
+#include "loki/core/Whisper.h"
 
 // --- Private Implementation ---
-// Including our renamed, local copy of the official CPP header
-#include "whisper_cpp.h"
+// Include the C API header from its new, private location.
+#include "whisper_cpp/include/whisper_c_api.h"
 
 #include <iostream>
 #include <vector>
@@ -32,15 +32,13 @@ public:
             whisper_free(ctx_);
             ctx_ = nullptr;
         }
-        std::cout << "Whisper model resources cleaned up" << std::endl;
     }
 
     std::string process_audio(const std::vector<float> &audio_data) {
         if (!ctx_ || audio_data.empty()) {
-            return R"({"error":"Whisper not initialized or no audio data"})";
+            return "";
         }
 
-        // Set up parameters for this run
         whisper_full_params params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
         params.n_threads = std::min(8, (int) std::thread::hardware_concurrency());
         params.print_progress = false;
@@ -50,13 +48,11 @@ public:
         params.suppress_blank = true;
         params.language = "en";
 
-        // Process the audio
         if (whisper_full(ctx_, params, audio_data.data(), audio_data.size()) != 0) {
             std::cerr << "Error: failed to process audio with whisper_full" << std::endl;
-            return R"({"error":"Whisper processing failed"})";
+            return "";
         }
 
-        // Extract the transcribed text
         std::string result_text;
         const int n_segments = whisper_full_n_segments(ctx_);
         for (int i = 0; i < n_segments; ++i) {
@@ -64,12 +60,9 @@ public:
             result_text += text;
         }
 
-        // Trim leading/trailing whitespace which whisper often includes
         if (!result_text.empty()) {
             size_t first = result_text.find_first_not_of(" \t\n\r");
-            if (std::string::npos == first) {
-                return ""; // String contains only whitespace
-            }
+            if (std::string::npos == first) return "";
             size_t last = result_text.find_last_not_of(" \t\n\r");
             result_text = result_text.substr(first, (last - first + 1));
         }
@@ -82,9 +75,7 @@ public:
     }
 };
 
-
 // --- Public Wrapper Function Implementations ---
-// These are the member functions for the public-facing Whisper class
 
 Whisper *Whisper::create(const std::string &model_path) {
     auto instance = new Whisper();
@@ -93,25 +84,19 @@ Whisper *Whisper::create(const std::string &model_path) {
     if (instance->impl_->is_model_loaded()) {
         return instance;
     }
-
-    // Cleanup on failure
     delete instance->impl_;
     delete instance;
     return nullptr;
 }
 
 std::string Whisper::process_audio(const std::vector<float> &audio_data) {
-    if (impl_) {
-        return impl_->process_audio(audio_data);
-    }
-    return "";
+    return impl_ ? impl_->process_audio(audio_data) : "";
 }
 
 void Whisper::destroy() {
     delete this;
 }
 
-// Private constructor/destructor definitions
 Whisper::Whisper() = default;
 
 Whisper::~Whisper() {

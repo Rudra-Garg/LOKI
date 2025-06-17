@@ -1,4 +1,4 @@
-#include "Config.h"
+#include "loki/core/Config.h"
 #include <fstream>
 #include <iostream>
 #include <algorithm> // For std::remove

@@ -1,0 +1,139 @@
+[
+  {
+    "type": "system_control",
+    "action": "launch_application",
+    "prompts": [
+      "open browser",
+      "launch the browser",
+      "open google chrome",
+      "launch chrome",
+      "start chrome",
+      "open firefox",
+      "launch firefox",
+      "open notepad",
+      "launch notepad",
+      "run notepad",
+      "open text editor",
+      "open the calculator",
+      "start calculator",
+      "open file explorer",
+      "show me my files",
+      "open my computer",
+      "pull up the terminal",
+      "open command prompt",
+      "start spotify",
+      "play some music on spotify"
+    ]
+  },
+  {
+    "type": "system_control",
+    "action": "set_volume",
+    "prompts": [
+      "turn the volume up",
+      "increase volume",
+      "make it louder",
+      "crank it up",
+      "turn the volume down",
+      "decrease volume",
+      "make it quieter",
+      "a little quieter please",
+      "mute the sound",
+      "unmute",
+      "turn off the sound",
+      "set volume to fifty percent",
+      "set volume to 100",
+      "volume half way"
+    ]
+  },
+  {
+    "type": "system_control",
+    "action": "system_power",
+    "prompts": [
+      "shut down the computer",
+      "turn off the pc",
+      "power down",
+      "restart the computer",
+      "reboot the system",
+      "put the computer to sleep",
+      "enter sleep mode",
+      "log off",
+      "sign out"
+    ]
+  },
+  {
+    "type": "calculation",
+    "action": "evaluate_expression",
+    "prompts": [
+      "calculate",
+      "what is",
+      "compute",
+      "evaluate",
+      "what's the square root of",
+      "how much is"
+    ]
+  },
+  {
+    "type": "general",
+    "action": "get_time",
+    "prompts": [
+      "what time is it",
+      "tell me the time",
+      "what's the current time",
+      "do you have the time"
+    ]
+  },
+  {
+    "type": "general",
+    "action": "get_date",
+    "prompts": [
+      "what is the date",
+      "what's today's date",
+      "tell me the date",
+      "what day is it",
+      "what's tomorrow"
+    ]
+  },
+  {
+    "type": "general",
+    "action": "get_weather",
+    "prompts": [
+        "what's the weather like",
+        "tell me the weather forecast",
+        "is it going to rain today",
+        "what's the temperature outside"
+    ]
+  },
+  {
+    "type": "general",
+    "action": "conversation",
+    "prompts": [
+      "tell me a story",
+      "tell me a joke",
+      "how are you",
+      "how are you doing",
+      "who are you",
+      "what is your name",
+      "what can you do",
+      "thank you",
+      "thanks",
+      "good morning",
+      "good afternoon"
+    ]
+  },
+  {
+    "type": "search",
+    "action": "web_search",
+    "prompts": [
+      "search for",
+      "look up",
+      "google",
+      "find information about",
+      "search the web for",
+      "who is",
+      "what is a",
+      "show me pictures of",
+      "search youtube for",
+      "find a video of"
+    ]
+  }
+]

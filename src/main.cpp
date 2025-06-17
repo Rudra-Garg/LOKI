@@ -12,15 +12,20 @@
 #include <fstream>
 #include <filesystem>
 #include <atomic>
-#define MINIAUDIO_IMPLEMENTATION
-#include "miniaudio.h"
 
-#include "pv_porcupine.h"
-#include "whisper.h"
-#include "Config.h"
-#include "OllamaClient.h"
-#include "intent/IntentClassifier.h"
+#define MINIAUDIO_IMPLEMENTATION
+#include "miniaudio/miniaudio.h"
+#include "picovoice/include/pv_porcupine.h"
+#include "loki/core/Whisper.h"
+#include "loki/core/Config.h"
+#include "loki/core/OllamaClient.h"
+#include "loki/intent/IntentClassifier.h"
 #include "nlohmann/json.hpp"
+#include "loki/intent/FastClassifier.h"
+
+#include "loki/AgentManager.h"
+#include "loki/agents/SystemControlAgent.h"
+#include "loki/agents/CalculationAgent.h"
 
 // --- VAD Configuration ---
 constexpr int SILENT_FRAMES_AFTER_SPEECH = 40;
@@ -54,62 +59,6 @@ bool ensure_directory_exists(const std::string &path) {
     } catch (const std::exception &e) {
         std::cerr << "Error creating directory " << path << ": " << e.what() << std::endl;
         return false;
-    }
-}
-
-void save_to_wav(const std::string &filename, const std::vector<float> &audio_data, uint32_t sample_rate = 16000) {
-    try {
-        std::ofstream file(filename, std::ios::binary);
-        if (!file) {
-            std::cerr << "ERROR: Could not open file for writing: " << filename << std::endl;
-            return;
-        }
-
-        // Convert float audio to 16-bit PCM
-        std::vector<int16_t> pcm_data(audio_data.size());
-        for (size_t i = 0; i < audio_data.size(); ++i) {
-            float sample = std::max(-1.0f, std::min(1.0f, audio_data[i]));
-            pcm_data[i] = static_cast<int16_t>(sample * 32767.0f);
-        }
-
-        // --- WAV Header ---
-        const int num_channels = 1;
-        const int bits_per_sample = 16;
-        const int byte_rate = sample_rate * num_channels * bits_per_sample / 8;
-        const int block_align = num_channels * bits_per_sample / 8;
-        const int subchunk2_size = static_cast<int>(pcm_data.size() * num_channels * bits_per_sample / 8);
-        const int chunk_size = 36 + subchunk2_size;
-
-        // "RIFF" chunk descriptor
-        file.write("RIFF", 4);
-        file.write(reinterpret_cast<const char *>(&chunk_size), 4);
-        file.write("WAVE", 4);
-
-        // "fmt " sub-chunk
-        file.write("fmt ", 4);
-        int32_t subchunk1_size = 16;
-        file.write(reinterpret_cast<const char *>(&subchunk1_size), 4);
-        int16_t audio_format = 1; // PCM
-        file.write(reinterpret_cast<const char *>(&audio_format), 2);
-        int16_t channels = static_cast<int16_t>(num_channels);
-        file.write(reinterpret_cast<const char *>(&channels), 2);
-        file.write(reinterpret_cast<const char *>(&sample_rate), 4);
-        file.write(reinterpret_cast<const char *>(&byte_rate), 4);
-        int16_t block_align_16 = static_cast<int16_t>(block_align);
-        file.write(reinterpret_cast<const char *>(&block_align_16), 2);
-        int16_t bits_per_sample_16 = static_cast<int16_t>(bits_per_sample);
-        file.write(reinterpret_cast<const char *>(&bits_per_sample_16), 2);
-
-        // "data" sub-chunk
-        file.write("data", 4);
-        file.write(reinterpret_cast<const char *>(&subchunk2_size), 4);
-
-        // Audio data
-        file.write(reinterpret_cast<const char *>(pcm_data.data()), subchunk2_size);
-
-        std::cout << "DEBUG: Saved audio to " << filename << " (" << audio_data.size() << " samples)" << std::endl;
-    } catch (const std::exception &e) {
-        std::cerr << "ERROR: Exception while saving WAV file: " << e.what() << std::endl;
     }
 }
 
@@ -189,11 +138,10 @@ int main() {
     const int MIN_COMMAND_MS = std::stoi(config.get("MIN_COMMAND_MS", "300"));
     const float VAD_THRESHOLD = config.get_float("VAD_THRESHOLD", 0.01f);
     const std::string OLLAMA_HOST = config.get("OLLAMA_HOST", "http://localhost:11434");
-    const std::string OLLAMA_MODEL = config.get("OLLAMA_MODEL", "tinylama");
+    const std::string OLLAMA_MODEL = config.get("OLLAMA_MODEL", "dolphin-phi");
 
     AppData app_data;
     app_data.vad_threshold = VAD_THRESHOLD;
-
     if (ACCESS_KEY.empty()) {
         std::cerr << "ERROR: Please set your ACCESS_KEY in the .env file." << std::endl;
         return -1;
@@ -219,11 +167,28 @@ int main() {
         return -1;
     }
     std::cout << "Whisper initialized successfully." << std::endl;
-
+    nlohmann::json llm_options = {
+        {"num_ctx", 512}, // Reduce context size for speed
+        {"temperature", 0.0}, // Make output deterministic
+        {"top_k", 40} // Use only the most likely tokens
+    };
     // --- New Architecture Setup ---
-    OllamaClient ollama_client(OLLAMA_HOST, OLLAMA_MODEL);
-    IntentClassifier intent_classifier(ollama_client);
-    // ---
+    OllamaClient ollama_client(OLLAMA_HOST, OLLAMA_MODEL, llm_options);
+    // Initialize the fast classifier with the paths to the embedding model and its vocabulary
+    // 1. Create the Embedding Model first.
+    const std::string EMBEDDING_MODEL_PATH = "all-MiniLM-L6-v2.Q4_K_S.gguf";
+    auto embedding_model = EmbeddingModel::create(EMBEDDING_MODEL_PATH);
+    if (!embedding_model) {
+        std::cerr << "CRITICAL: Could not create embedding model." << std::endl;
+        return -1;
+    }
+
+    // 2. Now, create the FastClassifier, passing the model to it.
+    const std::string INTENTS_JSON_PATH = "intents.json";
+    FastClassifier fast_classifier(INTENTS_JSON_PATH, *embedding_model);
+
+    // 3. The LLM Classifier is independent.
+    IntentClassifier llm_classifier(ollama_client);
 
     ma_device_config deviceConfig = ma_device_config_init(ma_device_type_capture);
     deviceConfig.capture.format = ma_format_f32;
@@ -243,6 +208,9 @@ int main() {
         ma_device_uninit(&device);
         return -1;
     }
+    AgentManager agent_manager;
+    agent_manager.register_agent(std::make_unique<SystemControlAgent>());
+    agent_manager.register_agent(std::make_unique<CalculationAgent>());
     std::cout << "Using device: " << device.capture.name << std::endl;
     std::cout << "\n<<< Waiting for wake word ('Hey Loki')..." << std::endl;
 
@@ -283,7 +251,23 @@ int main() {
                     std::cout << ">>> Heard: " << transcription << std::endl;
 
                     // --- Classify the intent ---
-                    IntentClassifier::Intent intent = intent_classifier.classify(transcription);
+                    // --- STAGE 2: Fast Path Classification ---
+                    auto fast_result = fast_classifier.classify(transcription);
+                    intent::Intent intent; // The final intent to be acted upon
+
+                    const float FAST_PATH_CONFIDENCE_THRESHOLD = 0.95f;
+
+                    if (fast_result.has_match && fast_result.confidence >= FAST_PATH_CONFIDENCE_THRESHOLD) {
+                        std::cout << "\n>>> Fast Path HIT! Routing directly." << std::endl;
+                        intent.type = fast_result.type;
+                        intent.action = fast_result.action;
+                        intent.parameters = fast_result.parameters;
+                        intent.confidence = fast_result.confidence;
+                    } else {
+                        std::cout << "\n>>> Fast Path MISS. Falling back to LLM." << std::endl;
+                        // --- STAGE 3: LLM Fallback ---
+                        intent = llm_classifier.classify(transcription);
+                    }
 
                     std::cout << "\n<<< Intent Recognized >>>" << std::endl;
                     std::cout << "  Type:       " << intent.type << std::endl;
@@ -292,14 +276,14 @@ int main() {
                             std::endl;
                     std::cout << "  Parameters: " << intent.parameters.dump(2) << std::endl;
 
-                    // This is where the AgentManager will eventually go.
-                    // For now, we can add a simple confidence check.
-                    if (intent.confidence < 0.7) {
+                    if (intent.confidence >= 0.7) {
+                        std::string response = agent_manager.dispatch(intent);
+                        std::cout << "\nLOKI says: \"" << response << "\"" << std::endl;
+                        // Later, this response will be fed to a Text-to-Speech engine
+                    } else {
+                        // This part is already correct
                         std::cout << "\nLOKI: I'm not very confident about that. Could you please rephrase?" <<
                                 std::endl;
-                    } else {
-                        std::cout << "\nACTION: (Routing to agent for type '" << intent.type << "' would happen here)"
-                                << std::endl;
                     }
                 }
             } else {

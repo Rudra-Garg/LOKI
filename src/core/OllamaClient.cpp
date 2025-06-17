@@ -1,5 +1,5 @@
-#include "OllamaClient.h"
-#include "httplib.h"
+#include "loki/core/OllamaClient.h"
+#include "httplib/httplib.h"
 #include "nlohmann/json.hpp"
 #include <iostream>
 
@@ -26,8 +26,8 @@ void parse_host_and_port(const std::string &full_host, std::string &address, int
     }
 }
 
-OllamaClient::OllamaClient(const std::string &host, const std::string &model_name)
-    : model_name_(model_name) {
+OllamaClient::OllamaClient(const std::string &host, const std::string &model_name, const json& options)
+    : model_name_(model_name), options_(options) {
     std::string address;
     int port;
     bool is_https;
@@ -59,7 +59,10 @@ std::string OllamaClient::generate(const std::string& system_prompt, const std::
         {"stream", false}
     };
 
-    // std::cout << "--- Sending to Ollama (" << model_name_ << "): \"" << prompt << "\"" << std::endl;
+    if (!options_.is_null() && !options_.empty()) {
+        payload["options"] = options_;
+    }
+
 
     auto res = client_->Post("/api/generate", payload.dump(), "application/json");
 
