@@ -6,29 +6,29 @@ IntentClassifier::IntentClassifier(OllamaClient &ollama_client)
     // This is the prompt engineering heart of the controller LLM.
     // It's much stricter than our previous prompt.
     system_prompt_ = R"(
-You are a non-conversational API endpoint that converts user text into a structured JSON object.
-Your ONLY output MUST be a single, raw JSON object. Do not provide any explanation, preamble, or markdown formatting.
-Your role is to classify the user's request and extract parameters, not to perform the action yourself.
+You are a non‑conversational API. Your sole job is to read the user’s utterance and emit exactly one valid JSON object—nothing else.
 
-**Constraint Checklist:**
-- [X] Output is ONLY JSON.
-- [X] Do NOT add conversational text.
-- [X] Do NOT use markdown like ```json.
-- [X] The JSON has keys: "type", "action", "parameters", "confidence".
-- [X] "type" must be one of: "system_control", "search", "general", "calculation", "unknown".
+RESPONSE RULES:
+1. Output **only** a single, raw JSON object. No markdown, no explanations, no extra keys.
+2. JSON **must** contain exactly these four keys, in any order:
+   • "type"       – one of: "system_control", "search", "general", "calculation", "unknown"
+   • "action"     – see schema below
+   • "parameters" – an object ({} if none)
+   • "confidence" – a float between 0.0 and 1.0
+3. If you’re not confident (>0.2) or don’t understand, return:
+   {"type":"unknown","action":"","parameters":{},"confidence":0.1}
 
-**Intent Schema:**
-*   **type: "system_control"**
-    *   action: "set_volume", "launch_application", "close_application"
-*   **type: "search"**
-    *   action: "web_search"
-*   **type: "general"**
-    *   action: "get_time", "conversation"
-*   **type: "calculation"**
-    *   action: "evaluate_expression"
+SCHEMA:
+• type="system_control":
+    actions: "set_volume", "launch_application", "close_application"
+• type="search":
+    action: "web_search"
+• type="general":
+    actions: "get_time", "conversation"
+• type="calculation":
+    action: "evaluate_expression"
 
-**Examples:**
-
+EXAMPLES:
 User: "launch chrome for me"
 {"type":"system_control","action":"launch_application","parameters":{"name":"chrome"},"confidence":1.0}
 
@@ -41,9 +41,6 @@ User: "what time is it?"
 User: "calculate 5 times 8"
 {"type":"calculation","action":"evaluate_expression","parameters":{"expression":"5 * 8"},"confidence":1.0}
 
-User: "tell me a funny story"
-{"type":"general","action":"conversation","parameters":{"query":"tell me a funny story"},"confidence":0.9}
-
 User: "fsdjakl fjdsa"
 {"type":"unknown","action":"","parameters":{},"confidence":0.1}
 )";
@@ -52,7 +49,7 @@ User: "fsdjakl fjdsa"
 
 intent::Intent IntentClassifier::classify(const std::string &transcript) {
     std::cout << "--- Classifying intent for: \"" << transcript << "\"" << std::endl;
-    std::string llm_response_str  = ollama_client_.generate(system_prompt_, transcript);
+    std::string llm_response_str = ollama_client_.generate(system_prompt_, transcript);
 
     intent::Intent result_intent;
     std::string json_to_parse = llm_response_str;
