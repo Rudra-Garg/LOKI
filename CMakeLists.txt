@@ -2,16 +2,12 @@ cmake_minimum_required(VERSION 3.21)
 # Add C to the project languages so CMake knows how to compile .c files
 project(loki CXX C)
 
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # ===================================================================
 # == Qt6 Configuration
 # ===================================================================
-# Set the CMAKE_PREFIX_PATH to help CMake find your Qt installation.
-# You can set this as a CMake variable when you configure the project,
-# or uncomment the line below and set it directly.
-
-
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
@@ -20,11 +16,8 @@ set(CMAKE_AUTOUIC ON)
 find_package(Qt6 REQUIRED COMPONENTS Widgets Core Gui)
 
 # ===================================================================
-# ===================================================================
 # == Third-Party Library Definitions
 # ===================================================================
-# Define tinyexpr as its own library. This compiles tinyexpr.c into a
-# static library object that we can link against later.
 add_library(tinyexpr STATIC third-party/tinyexpr/tinyexpr.c)
 target_include_directories(tinyexpr PUBLIC third-party/tinyexpr)
 
@@ -32,8 +25,6 @@ target_include_directories(tinyexpr PUBLIC third-party/tinyexpr)
 # ===================================================================
 # == Main Executable Target: loki
 # ===================================================================
-
-# Define the executable using an explicit list of ALL source and header files
 add_executable(loki
         # --- Core Application Logic ---
         src/main.cpp
@@ -54,6 +45,9 @@ add_executable(loki
         include/loki/core/LokiWorker.h
 )
 
+if(MSVC)
+    target_compile_options(loki PRIVATE "/FI${CMAKE_CURRENT_SOURCE_DIR}/include/msvc_compat.h")
+endif()
 
 # ===================================================================
 # == Dependencies and Linking for 'loki'
@@ -67,10 +61,11 @@ target_include_directories(loki PUBLIC
         "third-party/picovoice/include"
         "third-party/llama_cpp/include"
         "third-party/whisper_cpp/include"
+        "third-party/ggml/include" # This was correctly added
 )
 
 # --- Linker Search Directories for 'loki' ---
-# Tell the 'loki' target where to find external pre-compiled libraries (.lib, .a)
+# This tells the linker WHERE to find the libraries. This part is correct.
 target_link_directories(loki PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/third-party/ggml/lib"
         "${CMAKE_CURRENT_SOURCE_DIR}/third-party/llama_cpp/lib"
@@ -82,22 +77,31 @@ target_link_directories(loki PRIVATE
 # List the libraries our 'loki' target depends on.
 target_link_libraries(loki PRIVATE
         Qt6::Widgets
-        # Our self-built library
-        tinyexpr
-
-        # External pre-compiled libraries
-        pv_porcupine
-        whisper
-        llama
-        ws2_32
+        tinyexpr # Our self-built library
+        ws2_32   # Windows Socket library
 )
 
+## MSVC FIX: Use compiler-specific linking for third-party libraries.
+# MSVC links against .lib files directly. MinGW uses the -l<name> convention.
+# This `if/else` block makes the build script work correctly for both.
+if (MSVC)
+    target_link_libraries(loki PRIVATE
+            pv_porcupine.lib
+            whisper.lib
+            llama.lib
+    )
+else()
+    target_link_libraries(loki PRIVATE
+            pv_porcupine
+            whisper
+            llama
+    )
+endif()
 
 # ===================================================================
 # == Post-Build Commands for 'loki'
 # ===================================================================
-
-# Helper function to reduce repetition
+# This section is already correct and cross-platform. No changes needed.
 function(COPY_RUNTIME_ASSET target_name asset_path)
     add_custom_command(TARGET ${target_name} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -111,9 +115,9 @@ COPY_RUNTIME_ASSET(loki "${CMAKE_CURRENT_SOURCE_DIR}/.env")
 COPY_RUNTIME_ASSET(loki "${CMAKE_CURRENT_SOURCE_DIR}/third-party/ggml/lib/ggml.dll")
 COPY_RUNTIME_ASSET(loki "${CMAKE_CURRENT_SOURCE_DIR}/third-party/ggml/lib/ggml-base.dll")
 COPY_RUNTIME_ASSET(loki "${CMAKE_CURRENT_SOURCE_DIR}/third-party/ggml/lib/ggml-cpu.dll")
-COPY_RUNTIME_ASSET(loki "${CMAKE_CURRENT_SOURCE_DIR}/third-party/llama_cpp/lib/libllama.dll")
-COPY_RUNTIME_ASSET(loki "${CMAKE_CURRENT_SOURCE_DIR}/third-party/whisper_cpp/lib/libwhisper.dll")
-COPY_RUNTIME_ASSET(loki "${CMAKE_CURRENT_SOURCE_DIR}/third-party/picovoice/lib/libpv_porcupine.dll")
+COPY_RUNTIME_ASSET(loki "${CMAKE_CURRENT_SOURCE_DIR}/third-party/llama_cpp/lib/llama.dll")
+COPY_RUNTIME_ASSET(loki "${CMAKE_CURRENT_SOURCE_DIR}/third-party/whisper_cpp/lib/whisper.dll")
+COPY_RUNTIME_ASSET(loki "${CMAKE_CURRENT_SOURCE_DIR}/third-party/picovoice/lib/pv_porcupine.dll")
 COPY_RUNTIME_ASSET(loki "${CMAKE_CURRENT_SOURCE_DIR}/third-party/picovoice/lib/porcupine_params.pv")
 COPY_RUNTIME_ASSET(loki "${CMAKE_CURRENT_SOURCE_DIR}/models/porcupine/Hey-Loki.ppn")
 COPY_RUNTIME_ASSET(loki "${CMAKE_CURRENT_SOURCE_DIR}/models/whisper/ggml-base.en.bin")
@@ -125,28 +129,20 @@ COPY_RUNTIME_ASSET(loki "${CMAKE_CURRENT_SOURCE_DIR}/data/intents.json")
 # ===================================================================
 # == Qt Deployment (Run windeployqt automatically)
 # ===================================================================
-# This command automatically finds and copies all necessary Qt DLLs
-# (like Qt6Widgets.dll, plugins, etc.) to the build directory after a
-# successful compilation of the 'loki' target.
-
-# First, find the windeployqt executable in your Qt installation
+# This section is also correct. No changes needed.
 find_program(WINDEPLOYQT_PATH windeployqt HINTS "${CMAKE_PREFIX_PATH}/bin")
 
-if(WINDEPLOYQT_PATH)
+if (WINDEPLOYQT_PATH)
     message(STATUS "Found windeployqt: ${WINDEPLOYQT_PATH}")
     add_custom_command(
             TARGET loki POST_BUILD
             COMMAND "${WINDEPLOYQT_PATH}"
-            # Use a generator expression to get the executable's directory
-            # This is more robust than hard-coding a path.
             --dir "$<TARGET_FILE_DIR:loki>"
-            # The executable to deploy
             "$<TARGET_FILE:loki>"
-            # Optional: add --no-translations if you don't need language files
             --no-translations
             COMMENT "Running windeployqt to deploy Qt dependencies..."
     )
-else()
+else ()
     message(WARNING "windeployqt.exe not found. Qt DLLs will not be deployed automatically.")
-endif()
+endif ()
 # ===================================================================

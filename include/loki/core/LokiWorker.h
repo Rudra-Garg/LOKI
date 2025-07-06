@@ -9,7 +9,9 @@
 #include <memory>
 
 // C-API and Class Headers
-#include "picovoice/include/pv_porcupine.h" // ADDED: Include the correct header
+extern "C" {
+    #include "picovoice/include/pv_porcupine.h"
+}
 #include "loki/core/Whisper.h"              // ADDED: Include for the custom deleter
 
 // Forward-declarations for other types

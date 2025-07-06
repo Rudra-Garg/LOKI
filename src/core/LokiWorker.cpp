@@ -22,7 +22,9 @@
 // --- C-API Headers ---
 #define MINIAUDIO_IMPLEMENTATION
 #include "miniaudio/miniaudio.h"
-#include "picovoice/include/pv_porcupine.h"
+extern "C" {
+    #include "picovoice/include/pv_porcupine.h"
+}
 
 
 // --- Application State Structures and Callbacks ---

@@ -1,3 +1,4 @@
 models
 third-party
 cmake-build-debug
+.env
