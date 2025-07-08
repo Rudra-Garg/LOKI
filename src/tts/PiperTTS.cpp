@@ -392,12 +392,16 @@ namespace loki::tts {
 
         std::cout << "TTS_IMPL_LOG: Process running and pipes validated. Proceeding to warm-up." << std::endl;
 
+        // Set running flag before warm-up since the process is ready for synthesis
+        pImpl->isRunning = true;
+        
         std::vector<char> warmUpAudio;
         if (synthesizeToMemory("Ready.", warmUpAudio)) {
-            pImpl->isRunning = true;
             std::cout << "TTS_IMPL_LOG: Warm-up successful. Audio size: " << warmUpAudio.size() << " bytes" << std::endl;
             return true;
         } else {
+            // Reset running flag since warm-up failed
+            pImpl->isRunning = false;
             pImpl->lastError = "Piper warm-up synthesis failed. " + pImpl->lastError;
             std::cout << "TTS_IMPL_LOG: " << pImpl->lastError << std::endl;
             
