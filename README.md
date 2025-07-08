@@ -36,7 +36,7 @@ LOKI is a powerful, locally-running voice assistant built in C++ that combines a
 ## Prerequisites
 
 ### System Requirements
-- **Operating System**: Windows 10/11 (primary), Linux (experimental)
+- **Operating System**: Windows 10/11 (MSVC optimized), Linux (experimental support)
 - **RAM**: Minimum 8GB, recommended 16GB
 - **CPU**: Modern multi-core processor
 - **Storage**: 2GB free space for models and dependencies
@@ -44,18 +44,27 @@ LOKI is a powerful, locally-running voice assistant built in C++ that combines a
 ### Dependencies
 - **Qt6** (Widgets, Core, Gui components)
 - **CMake** 3.21 or higher
-- **C++17** compatible compiler (MSVC, GCC, or Clang)
+- **MSVC** (Microsoft Visual C++) - Primary supported compiler
+- **Visual Studio 2019/2022** or Build Tools for Visual Studio
 - **Ollama** (for LLM functionality)
+- **Windows SDK** (for Windows API integration)
 
 ### Third-Party Libraries
 - **Porcupine** (Picovoice) - Wake word detection
-- **Whisper.cpp** - Speech-to-text processing
+- **Whisper.cpp** - Speech-to-text processing  
 - **Llama.cpp** - Local LLM inference
 - **GGML** - Machine learning library
 - **nlohmann/json** - JSON processing
-- **httplib** - HTTP client
-- **miniaudio** - Audio processing
+- **httplib** - HTTP client for Ollama communication
+- **miniaudio** - Audio input/output processing
 - **TinyExpr** - Mathematical expression evaluation
+
+### Runtime Dependencies (Windows DLLs)
+- **ggml.dll, ggml-base.dll, ggml-cpu.dll** - GGML runtime
+- **llama.dll** - LLM inference
+- **whisper.dll** - Speech recognition
+- **pv_porcupine.dll** - Wake word detection
+- **Qt6 DLLs** - Automatically deployed by windeployqt
 
 ## Installation
 
@@ -68,16 +77,24 @@ git submodule update --init --recursive
 
 ### 2. Install Dependencies
 
-#### Windows (MSVC)
+#### Windows (MSVC) - Primary Platform
 ```bash
-# Install Qt6 via Qt Online Installer or vcpkg
+# Install Visual Studio 2019/2022 or Build Tools
+# Download from: https://visualstudio.microsoft.com/
+
+# Install Qt6 via Qt Online Installer (recommended)
+# Download from: https://www.qt.io/download-qt-installer
+# Or use vcpkg:
 vcpkg install qt6-base qt6-widgets
 
 # Install Ollama
 # Download and install from https://ollama.com/
+
+# Ensure CMake is installed and in PATH
+# Download from: https://cmake.org/download/
 ```
 
-#### Linux
+#### Linux (Experimental Support)
 ```bash
 # Ubuntu/Debian
 sudo apt update
@@ -85,6 +102,9 @@ sudo apt install qt6-base-dev qt6-tools-dev cmake build-essential
 
 # Install Ollama
 curl -fsSL https://ollama.com/install.sh | sh
+
+# Note: Pre-built libraries are Windows-focused
+# Manual compilation of third-party libraries may be required
 ```
 
 ### 3. Download AI Models
@@ -127,11 +147,33 @@ OLLAMA_MODEL=dolphin-phi
 ```
 
 ### 5. Build Project
+
+#### Windows (MSVC)
+```bash
+# Create build directory
+mkdir build
+cd build
+
+# Configure with MSVC (ensure Visual Studio tools are in PATH)
+cmake .. -G "Visual Studio 17 2022" -A x64
+# Or for Visual Studio 2019:
+# cmake .. -G "Visual Studio 16 2019" -A x64
+
+# Build the project
+cmake --build . --config Release
+
+# The executable will be in: build/Release/loki.exe
+# All required DLLs are automatically copied to the output directory
+```
+
+#### Linux (Experimental)
 ```bash
 mkdir build
 cd build
 cmake ..
 cmake --build . --config Release
+
+# Note: May require manual setup of third-party libraries
 ```
 
 ## Usage
@@ -145,8 +187,11 @@ cmake --build . --config Release
 
 2. **Launch LOKI**: Run the executable from the build directory
    ```bash
-   ./loki              # Linux
-   loki.exe            # Windows
+   # Windows
+   build\Release\loki.exe
+   
+   # Linux (experimental)
+   ./build/loki
    ```
 
 3. **System Tray**: LOKI will appear in your system tray and begin listening for the wake word
@@ -218,6 +263,35 @@ Update `.env` file with your preferred model:
 OLLAMA_MODEL=llama2
 ```
 
+## Technical Architecture
+
+LOKI is a multi-threaded Qt6 application designed with a focus on Windows/MSVC compatibility. The architecture consists of:
+
+### Core Components
+- **LokiWorker**: Main processing thread handling audio input and AI inference
+- **AgentManager**: Coordinates specialized agents for different functionality
+- **Intent Classification System**: Fast and advanced classifiers for command understanding
+- **GUI Integration**: Qt6-based interface with system tray functionality
+
+### Agent-Based System
+- **SystemControlAgent**: Windows system integration (applications, volume, power)
+- **CalculationAgent**: Mathematical expression evaluation using TinyExpr
+- **Extensible Architecture**: Easy addition of new specialized agents
+
+### MSVC Build Optimizations
+- **Compiler-Specific Linking**: Automatic .lib vs shared library selection
+- **Runtime Asset Management**: Automatic DLL and model file deployment
+- **Windows API Integration**: Native system control and audio device access
+- **Qt Deployment**: Automated windeployqt integration for distribution
+
+### Audio Processing Pipeline
+1. **Wake Word Detection**: Porcupine continuously monitors for "Hey Loki"
+2. **Voice Activity Detection**: Automatic speech start/end detection
+3. **Speech Recognition**: Whisper.cpp converts speech to text
+4. **Intent Classification**: Embedding-based classification with FastClassifier
+5. **Agent Execution**: Appropriate agent handles the classified command
+6. **Response Generation**: Ollama LLM generates contextual responses
+
 ## Project Structure
 
 ```
@@ -250,6 +324,23 @@ LOKI/
 ## Development
 
 ### Building from Source
+
+#### Windows (MSVC) - Recommended
+```bash
+# Debug build
+mkdir build-debug
+cd build-debug
+cmake .. -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Debug
+cmake --build . --config Debug
+
+# Release build
+mkdir build-release  
+cd build-release
+cmake .. -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release
+cmake --build . --config Release
+```
+
+#### Alternative Compilers (Experimental)
 ```bash
 # Debug build
 cmake -DCMAKE_BUILD_TYPE=Debug ..
@@ -291,9 +382,22 @@ cmake --build . --config Release
 - Ensure model is downloaded: `ollama pull model-name`
 
 **Build Errors**
-- Verify all dependencies are installed
+- **MSVC**: Verify Visual Studio 2019/2022 is installed with C++ tools
 - Check CMake version (3.21+ required)
-- Ensure Qt6 is properly configured
+- Ensure Qt6 is properly configured and in PATH
+- Verify Windows SDK is installed for system API integration
+
+**MSVC-Specific Issues**
+- Ensure `/FI` forced include for `msvc_compat.h` is working
+- Verify .lib files are correctly linked (not .dll files)
+- Check that `ws2_32.lib` is available for Windows sockets
+- Use Visual Studio Developer Command Prompt if build fails
+
+**Missing DLL Errors**
+- Ensure all required DLLs are copied to output directory
+- Check CMakeLists.txt `COPY_RUNTIME_ASSET` commands completed successfully  
+- Verify `windeployqt` ran successfully for Qt dependencies
+- Manually copy missing DLLs from `third-party/*/lib/` if needed
 
 ### Performance Optimization
 - Use GPU acceleration if available
