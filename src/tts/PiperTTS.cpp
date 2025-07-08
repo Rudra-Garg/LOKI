@@ -66,6 +66,14 @@ namespace loki::tts {
         // It reads in chunks until no more data is available, with timeout and process health checks
         bool readAudioData(std::vector<char> &audioData) {
             audioData.clear();
+            
+            // Validate stdout pipe before attempting to read
+            if (!hStdoutRead || hStdoutRead == INVALID_HANDLE_VALUE) {
+                lastError = "Stdout pipe is invalid";
+                std::cout << "TTS_PIPE_LOG: " << lastError << std::endl;
+                return false;
+            }
+            
             char buffer[4096];
             DWORD bytesRead;
             DWORD startTime = GetTickCount();
@@ -77,7 +85,9 @@ namespace loki::tts {
             // Set the pipe to non-blocking mode to read all available data without hanging
             DWORD pipeState = PIPE_NOWAIT;
             if (!SetNamedPipeHandleState(hStdoutRead, &pipeState, NULL, NULL)) {
-                std::cout << "TTS_PIPE_LOG: Could not set pipe to non-blocking mode." << std::endl;
+                DWORD error = GetLastError();
+                std::cout << "TTS_PIPE_LOG: Warning - Could not set pipe to non-blocking mode. Error: " << error << std::endl;
+                // Continue anyway as this might fail for anonymous pipes
             }
 
             // First, wait a moment for Piper to process and start outputting
@@ -241,17 +251,70 @@ namespace loki::tts {
         saAttr.bInheritHandle = TRUE;
         saAttr.lpSecurityDescriptor = NULL;
 
-        if (!CreatePipe(&hStdinRead, &pImpl->hStdinWrite, &saAttr, 0) ||
-            !CreatePipe(&pImpl->hStdoutRead, &hStdoutWrite, &saAttr, 0) ||
-            !CreatePipe(&pImpl->hStderrRead, &hStderrWrite, &saAttr, 0)) {
-            pImpl->lastError = "Failed to create pipes for Piper process.";
+        // Create pipes individually with detailed error checking
+        if (!CreatePipe(&hStdinRead, &pImpl->hStdinWrite, &saAttr, 0)) {
+            DWORD error = GetLastError();
+            pImpl->lastError = "Failed to create stdin pipe for Piper process. Error: " + std::to_string(error);
             std::cout << "TTS_IMPL_LOG: " << pImpl->lastError << std::endl;
             return false;
         }
+        
+        if (!CreatePipe(&pImpl->hStdoutRead, &hStdoutWrite, &saAttr, 0)) {
+            DWORD error = GetLastError();
+            pImpl->lastError = "Failed to create stdout pipe for Piper process. Error: " + std::to_string(error);
+            std::cout << "TTS_IMPL_LOG: " << pImpl->lastError << std::endl;
+            // Clean up stdin pipe
+            CloseHandle(hStdinRead);
+            CloseHandle(pImpl->hStdinWrite);
+            pImpl->hStdinWrite = nullptr;
+            return false;
+        }
+        
+        if (!CreatePipe(&pImpl->hStderrRead, &hStderrWrite, &saAttr, 0)) {
+            DWORD error = GetLastError();
+            pImpl->lastError = "Failed to create stderr pipe for Piper process. Error: " + std::to_string(error);
+            std::cout << "TTS_IMPL_LOG: " << pImpl->lastError << std::endl;
+            // Clean up stdin and stdout pipes
+            CloseHandle(hStdinRead);
+            CloseHandle(pImpl->hStdinWrite);
+            CloseHandle(pImpl->hStdoutRead);
+            CloseHandle(hStdoutWrite);
+            pImpl->hStdinWrite = nullptr;
+            pImpl->hStdoutRead = nullptr;
+            return false;
+        }
 
-        SetHandleInformation(pImpl->hStdinWrite, HANDLE_FLAG_INHERIT, 0);
-        SetHandleInformation(pImpl->hStdoutRead, HANDLE_FLAG_INHERIT, 0);
-        SetHandleInformation(pImpl->hStderrRead, HANDLE_FLAG_INHERIT, 0);
+        // Validate pipe handles
+        if (pImpl->hStdinWrite == INVALID_HANDLE_VALUE || pImpl->hStdoutRead == INVALID_HANDLE_VALUE || 
+            pImpl->hStderrRead == INVALID_HANDLE_VALUE) {
+            pImpl->lastError = "One or more pipe handles are invalid after creation";
+            std::cout << "TTS_IMPL_LOG: " << pImpl->lastError << std::endl;
+            // Clean up all pipes
+            CloseHandle(hStdinRead);
+            CloseHandle(pImpl->hStdinWrite);
+            CloseHandle(pImpl->hStdoutRead);
+            CloseHandle(hStdoutWrite);
+            CloseHandle(pImpl->hStderrRead);
+            CloseHandle(hStderrWrite);
+            pImpl->hStdinWrite = nullptr;
+            pImpl->hStdoutRead = nullptr;
+            pImpl->hStderrRead = nullptr;
+            return false;
+        }
+
+        // Configure handle inheritance - prevent child handles from being inherited by grandchildren
+        if (!SetHandleInformation(pImpl->hStdinWrite, HANDLE_FLAG_INHERIT, 0)) {
+            DWORD error = GetLastError();
+            std::cout << "TTS_IMPL_LOG: Warning - Failed to set stdin write handle inheritance. Error: " << error << std::endl;
+        }
+        if (!SetHandleInformation(pImpl->hStdoutRead, HANDLE_FLAG_INHERIT, 0)) {
+            DWORD error = GetLastError();
+            std::cout << "TTS_IMPL_LOG: Warning - Failed to set stdout read handle inheritance. Error: " << error << std::endl;
+        }
+        if (!SetHandleInformation(pImpl->hStderrRead, HANDLE_FLAG_INHERIT, 0)) {
+            DWORD error = GetLastError();
+            std::cout << "TTS_IMPL_LOG: Warning - Failed to set stderr read handle inheritance. Error: " << error << std::endl;
+        }
 
         si.hStdInput = hStdinRead;
         si.hStdOutput = hStdoutWrite;
@@ -267,10 +330,16 @@ namespace loki::tts {
             pImpl->lastError = "CreateProcessA failed for Piper. Error: " + std::to_string(error);
             std::cout << "TTS_IMPL_LOG: " << pImpl->lastError << std::endl;
             
-            // Clean up pipe handles
+            // Clean up all pipe handles
             CloseHandle(hStdinRead);
             CloseHandle(hStdoutWrite);
             CloseHandle(hStderrWrite);
+            CloseHandle(pImpl->hStdinWrite);
+            CloseHandle(pImpl->hStdoutRead);
+            CloseHandle(pImpl->hStderrRead);
+            pImpl->hStdinWrite = nullptr;
+            pImpl->hStdoutRead = nullptr;
+            pImpl->hStderrRead = nullptr;
             return false;
         }
 
@@ -299,14 +368,40 @@ namespace loki::tts {
             return false;
         }
 
-        std::cout << "TTS_IMPL_LOG: Process running. Proceeding to warm-up." << std::endl;
+        // Additional validation: verify pipes are still valid and writable
+        std::cout << "TTS_IMPL_LOG: Validating pipe handles before warm-up..." << std::endl;
+        
+        // Test that we can write to stdin pipe
+        DWORD bytesWritten;
+        const char testData[] = "";  // Empty test write
+        if (!WriteFile(pImpl->hStdinWrite, testData, 0, &bytesWritten, nullptr)) {
+            DWORD error = GetLastError();
+            pImpl->lastError = "Stdin pipe validation failed. Error: " + std::to_string(error);
+            std::cout << "TTS_IMPL_LOG: " << pImpl->lastError << std::endl;
+            return false;
+        }
+        
+        // Verify stdout pipe is readable by checking its state
+        DWORD pipeState, curInstances, maxCollectionCount, collectDataTimeout;
+        if (!GetNamedPipeHandleState(pImpl->hStdoutRead, &pipeState, &curInstances, 
+                                     &maxCollectionCount, &collectDataTimeout, nullptr, 0)) {
+            // This might fail for anonymous pipes, so only log as warning
+            DWORD error = GetLastError();
+            std::cout << "TTS_IMPL_LOG: Warning - Could not get stdout pipe state. Error: " << error << std::endl;
+        }
 
+        std::cout << "TTS_IMPL_LOG: Process running and pipes validated. Proceeding to warm-up." << std::endl;
+
+        // Set running flag before warm-up since the process is ready for synthesis
+        pImpl->isRunning = true;
+        
         std::vector<char> warmUpAudio;
         if (synthesizeToMemory("Ready.", warmUpAudio)) {
-            pImpl->isRunning = true;
             std::cout << "TTS_IMPL_LOG: Warm-up successful. Audio size: " << warmUpAudio.size() << " bytes" << std::endl;
             return true;
         } else {
+            // Reset running flag since warm-up failed
+            pImpl->isRunning = false;
             pImpl->lastError = "Piper warm-up synthesis failed. " + pImpl->lastError;
             std::cout << "TTS_IMPL_LOG: " << pImpl->lastError << std::endl;
             
@@ -333,8 +428,19 @@ namespace loki::tts {
     }
 
     bool PiperTTS::synthesizeToMemory(const std::string &text, std::vector<char> &audioData) {
-        if (!pImpl->isRunning || !pImpl->hStdinWrite) {
-            pImpl->lastError = "Piper process is not running or pipe is invalid.";
+        if (!pImpl->isRunning) {
+            pImpl->lastError = "Piper process is not running.";
+            return false;
+        }
+        
+        // Validate pipe handles
+        if (!pImpl->hStdinWrite || pImpl->hStdinWrite == INVALID_HANDLE_VALUE) {
+            pImpl->lastError = "Stdin pipe is invalid.";
+            return false;
+        }
+        
+        if (!pImpl->hStdoutRead || pImpl->hStdoutRead == INVALID_HANDLE_VALUE) {
+            pImpl->lastError = "Stdout pipe is invalid.";
             return false;
         }
         
