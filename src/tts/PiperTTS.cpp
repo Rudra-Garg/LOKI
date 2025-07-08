@@ -18,39 +18,177 @@ namespace loki::tts {
         HANDLE hProcess = nullptr;
         HANDLE hStdinWrite = nullptr;
         HANDLE hStdoutRead = nullptr;
+        HANDLE hStderrRead = nullptr;
         bool isRunning = false;
 
         bool fileExists(const std::string &path) {
             return std::filesystem::exists(path);
         }
 
-        // CORRECTED: This function reads a raw WAV stream from the pipe.
-        // It reads in chunks until no more data is available from the process for this transaction.
+        // Check if the Piper process is still running
+        bool isProcessRunning() {
+            if (!hProcess) return false;
+            DWORD exitCode;
+            if (GetExitCodeProcess(hProcess, &exitCode)) {
+                return exitCode == STILL_ACTIVE;
+            }
+            return false;
+        }
+
+        // Read stderr output for debugging
+        std::string readStderrOutput(int timeoutMs = 1000) {
+            if (!hStderrRead) return "";
+            
+            std::string stderrOutput;
+            char buffer[1024];
+            DWORD bytesRead;
+            DWORD startTime = GetTickCount();
+            
+            // Set pipe to non-blocking mode
+            DWORD pipeState = PIPE_NOWAIT;
+            SetNamedPipeHandleState(hStderrRead, &pipeState, NULL, NULL);
+            
+            while ((GetTickCount() - startTime) < timeoutMs) {
+                if (ReadFile(hStderrRead, buffer, sizeof(buffer) - 1, &bytesRead, nullptr) && bytesRead > 0) {
+                    buffer[bytesRead] = '\0';
+                    stderrOutput += buffer;
+                } else {
+                    DWORD error = GetLastError();
+                    if (error != ERROR_NO_DATA) break;
+                    Sleep(10); // Brief pause before retry
+                }
+            }
+            
+            return stderrOutput;
+        }
+
+        // IMPROVED: This function reads a raw WAV stream from the pipe with better error handling
+        // It reads in chunks until no more data is available, with timeout and process health checks
         bool readAudioData(std::vector<char> &audioData) {
             audioData.clear();
             char buffer[4096];
             DWORD bytesRead;
+            DWORD startTime = GetTickCount();
+            const DWORD timeoutMs = 10000; // 10 second timeout
+            bool hasReceivedData = false;
+
+            std::cout << "TTS_PIPE_LOG: Starting to read audio data from Piper..." << std::endl;
 
             // Set the pipe to non-blocking mode to read all available data without hanging
             DWORD pipeState = PIPE_NOWAIT;
             if (!SetNamedPipeHandleState(hStdoutRead, &pipeState, NULL, NULL)) {
-                // If we can't set it, we'll proceed with blocking reads, but this is less ideal.
                 std::cout << "TTS_PIPE_LOG: Could not set pipe to non-blocking mode." << std::endl;
             }
 
-            while (ReadFile(hStdoutRead, buffer, sizeof(buffer), &bytesRead, nullptr) && bytesRead > 0) {
-                audioData.insert(audioData.end(), buffer, buffer + bytesRead);
+            // First, wait a moment for Piper to process and start outputting
+            Sleep(100);
+
+            while ((GetTickCount() - startTime) < timeoutMs) {
+                // Check if process is still running
+                if (!isProcessRunning()) {
+                    lastError = "Piper process has terminated unexpectedly";
+                    std::cout << "TTS_PIPE_LOG: " << lastError << std::endl;
+                    
+                    // Try to read stderr for error information
+                    std::string stderrOutput = readStderrOutput(500);
+                    if (!stderrOutput.empty()) {
+                        std::cout << "TTS_PIPE_LOG: Piper stderr: " << stderrOutput << std::endl;
+                        lastError += ". Stderr: " + stderrOutput;
+                    }
+                    return false;
+                }
+
+                if (ReadFile(hStdoutRead, buffer, sizeof(buffer), &bytesRead, nullptr) && bytesRead > 0) {
+                    // Log first few bytes to see what we're getting
+                    if (!hasReceivedData) {
+                        std::cout << "TTS_PIPE_LOG: First " << std::min((DWORD)32, bytesRead) << " bytes received: ";
+                        for (DWORD i = 0; i < std::min((DWORD)32, bytesRead); ++i) {
+                            if (buffer[i] >= 32 && buffer[i] <= 126) {
+                                std::cout << buffer[i];
+                            } else {
+                                std::cout << "\\x" << std::hex << (unsigned char)buffer[i] << std::dec;
+                            }
+                        }
+                        std::cout << std::endl;
+                        hasReceivedData = true;
+                    }
+
+                    audioData.insert(audioData.end(), buffer, buffer + bytesRead);
+                    std::cout << "TTS_PIPE_LOG: Read " << bytesRead << " bytes, total: " << audioData.size() << std::endl;
+                    
+                    // Reset timeout when we receive data
+                    startTime = GetTickCount();
+                } else {
+                    DWORD error = GetLastError();
+                    if (error != ERROR_NO_DATA && error != ERROR_MORE_DATA) {
+                        lastError = "Failed to read from Piper output stream. Error: " + std::to_string(error);
+                        std::cout << "TTS_PIPE_LOG: " << lastError << std::endl;
+                        return false;
+                    }
+                    
+                    // If we have data and no more is immediately available, check if it's sufficient
+                    if (hasReceivedData && audioData.size() >= 44) {
+                        // Brief pause to see if more data is coming
+                        Sleep(50);
+                        
+                        // Try one more read
+                        if (ReadFile(hStdoutRead, buffer, sizeof(buffer), &bytesRead, nullptr) && bytesRead > 0) {
+                            audioData.insert(audioData.end(), buffer, buffer + bytesRead);
+                            std::cout << "TTS_PIPE_LOG: Read additional " << bytesRead << " bytes, total: " << audioData.size() << std::endl;
+                        } else {
+                            // No more data available, proceed with what we have
+                            break;
+                        }
+                    }
+                    
+                    Sleep(10); // Brief pause before retry
+                }
             }
 
-            // After the first read succeeds, subsequent reads might "fail" with ERROR_NO_DATA, which is expected.
-            if (audioData.empty() && GetLastError() != ERROR_NO_DATA) {
-                lastError = "Failed to read from Piper output stream. Error: " + std::to_string(GetLastError());
+            // Check if we timed out
+            if ((GetTickCount() - startTime) >= timeoutMs) {
+                lastError = "Timeout reading from Piper output stream after " + std::to_string(timeoutMs) + "ms";
+                std::cout << "TTS_PIPE_LOG: " << lastError << std::endl;
+                
+                // Try to read stderr for additional info
+                std::string stderrOutput = readStderrOutput(500);
+                if (!stderrOutput.empty()) {
+                    std::cout << "TTS_PIPE_LOG: Piper stderr during timeout: " << stderrOutput << std::endl;
+                }
+                return false;
+            }
+
+            std::cout << "TTS_PIPE_LOG: Finished reading. Total audio data size: " << audioData.size() << " bytes" << std::endl;
+
+            // Check if we received data but it's too small
+            if (audioData.empty()) {
+                lastError = "No audio data received from Piper";
+                std::cout << "TTS_PIPE_LOG: " << lastError << std::endl;
+                
+                // Try to read stderr for additional info
+                std::string stderrOutput = readStderrOutput(500);
+                if (!stderrOutput.empty()) {
+                    std::cout << "TTS_PIPE_LOG: Piper stderr when no data: " << stderrOutput << std::endl;
+                    lastError += ". Stderr: " + stderrOutput;
+                }
                 return false;
             }
 
             if (audioData.size() < 44) {
                 lastError = "Received incomplete audio data from Piper. Size: " + std::to_string(audioData.size()) +
-                            " bytes.";
+                            " bytes (expected at least 44 for WAV header)";
+                std::cout << "TTS_PIPE_LOG: " << lastError << std::endl;
+                
+                // Show what we actually received
+                std::cout << "TTS_PIPE_LOG: Received data: ";
+                for (size_t i = 0; i < std::min(audioData.size(), (size_t)64); ++i) {
+                    if (audioData[i] >= 32 && audioData[i] <= 126) {
+                        std::cout << audioData[i];
+                    } else {
+                        std::cout << "\\x" << std::hex << (unsigned char)audioData[i] << std::dec;
+                    }
+                }
+                std::cout << std::endl;
                 return false;
             }
 
@@ -67,6 +205,7 @@ namespace loki::tts {
 
     PiperTTS::~PiperTTS() {
         if (pImpl->hStdinWrite) CloseHandle(pImpl->hStdinWrite);
+        if (pImpl->hStderrRead) CloseHandle(pImpl->hStderrRead);
         if (pImpl->isRunning && pImpl->hProcess) {
             if (WaitForSingleObject(pImpl->hProcess, 500) == WAIT_TIMEOUT) {
                 TerminateProcess(pImpl->hProcess, 1);
@@ -96,24 +235,27 @@ namespace loki::tts {
         si.dwFlags = STARTF_USESTDHANDLES;
         ZeroMemory(&pi, sizeof(pi));
 
-        HANDLE hStdinRead, hStdoutWrite;
+        HANDLE hStdinRead, hStdoutWrite, hStderrWrite;
         SECURITY_ATTRIBUTES saAttr;
         saAttr.nLength = sizeof(SECURITY_ATTRIBUTES);
         saAttr.bInheritHandle = TRUE;
         saAttr.lpSecurityDescriptor = NULL;
 
         if (!CreatePipe(&hStdinRead, &pImpl->hStdinWrite, &saAttr, 0) ||
-            !CreatePipe(&pImpl->hStdoutRead, &hStdoutWrite, &saAttr, 0)) {
+            !CreatePipe(&pImpl->hStdoutRead, &hStdoutWrite, &saAttr, 0) ||
+            !CreatePipe(&pImpl->hStderrRead, &hStderrWrite, &saAttr, 0)) {
             pImpl->lastError = "Failed to create pipes for Piper process.";
+            std::cout << "TTS_IMPL_LOG: " << pImpl->lastError << std::endl;
             return false;
         }
 
         SetHandleInformation(pImpl->hStdinWrite, HANDLE_FLAG_INHERIT, 0);
         SetHandleInformation(pImpl->hStdoutRead, HANDLE_FLAG_INHERIT, 0);
+        SetHandleInformation(pImpl->hStderrRead, HANDLE_FLAG_INHERIT, 0);
 
         si.hStdInput = hStdinRead;
         si.hStdOutput = hStdoutWrite;
-        si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+        si.hStdError = hStderrWrite;
 
         std::string cmdStr = cmd.str();
         std::vector<char> cmdVec(cmdStr.begin(), cmdStr.end());
@@ -121,7 +263,14 @@ namespace loki::tts {
 
         if (!CreateProcessA(NULL, cmdVec.data(), NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL,
                             pImpl->appDirPath.c_str(), &si, &pi)) {
-            pImpl->lastError = "CreateProcessA failed for Piper. Error: " + std::to_string(GetLastError());
+            DWORD error = GetLastError();
+            pImpl->lastError = "CreateProcessA failed for Piper. Error: " + std::to_string(error);
+            std::cout << "TTS_IMPL_LOG: " << pImpl->lastError << std::endl;
+            
+            // Clean up pipe handles
+            CloseHandle(hStdinRead);
+            CloseHandle(hStdoutWrite);
+            CloseHandle(hStderrWrite);
             return false;
         }
 
@@ -129,21 +278,53 @@ namespace loki::tts {
         CloseHandle(pi.hThread);
         CloseHandle(hStdinRead);
         CloseHandle(hStdoutWrite);
+        CloseHandle(hStderrWrite);
 
-        std::cout << "TTS_IMPL_LOG: Process launched. Proceeding to warm-up." << std::endl;
+        std::cout << "TTS_IMPL_LOG: Process launched successfully. PID: " << pi.dwProcessId << std::endl;
+        
+        // Give Piper a moment to initialize
+        Sleep(500);
+        
+        // Check if process is still running after initialization
+        if (!pImpl->isProcessRunning()) {
+            pImpl->lastError = "Piper process terminated immediately after launch";
+            std::cout << "TTS_IMPL_LOG: " << pImpl->lastError << std::endl;
+            
+            // Try to read stderr for error information
+            std::string stderrOutput = pImpl->readStderrOutput(1000);
+            if (!stderrOutput.empty()) {
+                std::cout << "TTS_IMPL_LOG: Piper stderr: " << stderrOutput << std::endl;
+                pImpl->lastError += ". Stderr: " + stderrOutput;
+            }
+            return false;
+        }
+
+        std::cout << "TTS_IMPL_LOG: Process running. Proceeding to warm-up." << std::endl;
 
         std::vector<char> warmUpAudio;
         if (synthesizeToMemory("Ready.", warmUpAudio)) {
             pImpl->isRunning = true;
-            std::cout << "TTS_IMPL_LOG: Warm-up successful." << std::endl;
+            std::cout << "TTS_IMPL_LOG: Warm-up successful. Audio size: " << warmUpAudio.size() << " bytes" << std::endl;
             return true;
         } else {
             pImpl->lastError = "Piper warm-up synthesis failed. " + pImpl->lastError;
             std::cout << "TTS_IMPL_LOG: " << pImpl->lastError << std::endl;
+            
+            // Try to get additional diagnostic information
+            std::string stderrOutput = pImpl->readStderrOutput(1000);
+            if (!stderrOutput.empty()) {
+                std::cout << "TTS_IMPL_LOG: Additional Piper stderr: " << stderrOutput << std::endl;
+            }
+            
+            // Clean up resources
             CloseHandle(pImpl->hStdinWrite);
             pImpl->hStdinWrite = nullptr;
             CloseHandle(pImpl->hStdoutRead);
             pImpl->hStdoutRead = nullptr;
+            if (pImpl->hStderrRead) {
+                CloseHandle(pImpl->hStderrRead);
+                pImpl->hStderrRead = nullptr;
+            }
             TerminateProcess(pImpl->hProcess, 1);
             CloseHandle(pImpl->hProcess);
             pImpl->hProcess = nullptr;
@@ -156,23 +337,39 @@ namespace loki::tts {
             pImpl->lastError = "Piper process is not running or pipe is invalid.";
             return false;
         }
+        
+        // Additional process health check
+        if (!pImpl->isProcessRunning()) {
+            pImpl->lastError = "Piper process has terminated unexpectedly";
+            pImpl->isRunning = false;
+            return false;
+        }
+        
         if (text.empty()) {
             pImpl->lastError = "Text cannot be empty";
             return false;
         }
+
+        std::cout << "TTS_SYNTHESIS_LOG: Synthesizing text: \"" << text << "\"" << std::endl;
 
         nlohmann::json inputJson;
         inputJson["text"] = text;
         std::string jsonString = inputJson.dump() + "\n";
         DWORD bytesWritten;
 
+        std::cout << "TTS_SYNTHESIS_LOG: Sending JSON: " << jsonString << std::endl;
+
         if (!WriteFile(pImpl->hStdinWrite, jsonString.c_str(), jsonString.length(), &bytesWritten, nullptr) ||
             bytesWritten != jsonString.length()) {
-            pImpl->lastError = "Failed to write to Piper process stdin. Error: " + std::to_string(GetLastError());
+            DWORD error = GetLastError();
+            pImpl->lastError = "Failed to write to Piper process stdin. Error: " + std::to_string(error);
+            std::cout << "TTS_SYNTHESIS_LOG: " << pImpl->lastError << std::endl;
             return false;
         }
 
-        // This now correctly reads the raw audio stream from stdout.
+        std::cout << "TTS_SYNTHESIS_LOG: Successfully wrote " << bytesWritten << " bytes to stdin" << std::endl;
+
+        // This now correctly reads the raw audio stream from stdout with improved error handling
         return pImpl->readAudioData(audioData);
     }
 
