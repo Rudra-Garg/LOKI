@@ -22,9 +22,9 @@ add_library(tinyexpr STATIC third-party/tinyexpr/tinyexpr.c)
 target_include_directories(tinyexpr PUBLIC third-party/tinyexpr)
 
 # ===================================================================
-# == Main Executable Target: loki
+# == Source Files Definition
 # ===================================================================
-add_executable(loki
+set(CORE_SOURCES
         # --- Core Application Logic ---
         src/main.cpp
         src/AgentManager.cpp
@@ -37,15 +37,36 @@ add_executable(loki
         src/intent/FastClassifier.cpp
         src/intent/IntentClassifier.cpp
 
-        # --- TTS Integration ---
-        src/tts/PiperTTS.cpp
-        include/loki/tts/PiperTTS.h
-
         # --- Qt UI and Worker ---
         src/gui/MainWindow.cpp
         src/core/LokiWorker.cpp
+)
+
+set(TTS_SOURCES
+        # --- TTS Integration ---
+        src/tts/PiperTTS.cpp
+        src/tts/TTSWorkerThread.cpp
+        src/tts/AsyncTTSManager.cpp
+)
+
+set(HEADER_FILES
+        # --- Core Headers ---
         include/loki/gui/MainWindow.h
         include/loki/core/LokiWorker.h
+
+        # --- TTS Headers ---
+        include/loki/tts/PiperTTS.h
+        include/loki/tts/TTSWorkerThread.h
+        include/loki/tts/AsyncTTSManager.h
+)
+
+# ===================================================================
+# == Main Executable Target: loki
+# ===================================================================
+qt_add_executable(loki
+        ${CORE_SOURCES}
+        ${TTS_SOURCES}
+        ${HEADER_FILES}
 )
 
 if (MSVC)
@@ -77,6 +98,8 @@ target_link_directories(loki PRIVATE
 # --- Link Libraries for 'loki' ---
 target_link_libraries(loki PRIVATE
         Qt6::Widgets
+        Qt6::Core
+        Qt6::Gui
         tinyexpr # Our self-built library
         ws2_32   # Windows Socket library
 )

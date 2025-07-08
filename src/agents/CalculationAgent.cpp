@@ -8,7 +8,7 @@ std::string CalculationAgent::get_name() const {
     return "calculation";
 }
 
-std::string CalculationAgent::execute(const intent::Intent &intent) {
+std::string CalculationAgent::execute(const loki::intent::Intent &intent) {
     if (intent.action == "evaluate_expression") {
         if (!intent.parameters.contains("expression")) {
             return "You asked me to calculate something, but didn't provide an expression.";

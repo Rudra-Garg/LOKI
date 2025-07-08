@@ -7,6 +7,7 @@
 #include <iostream>
 #include <mutex>
 #include <cmath> // Required for std::sqrt
+#define NOMINMAX
 #include <windows.h> // For SetEnvironmentVariableA
 #include <QCoreApplication> // ADDED: For getting application path
 
@@ -20,7 +21,7 @@
 #include "loki/AgentManager.h"
 #include "loki/agents/SystemControlAgent.h"
 #include "loki/agents/CalculationAgent.h"
-#include "loki/tts/PiperTTS.h" // TTS header
+#include "loki/tts/AsyncTTSManager.h"
 
 // --- C-API Headers ---
 #define MINIAUDIO_IMPLEMENTATION
@@ -29,13 +30,6 @@
 extern "C" {
 #include "picovoice/include/pv_porcupine.h"
 }
-
-// ADDED: Implementation for the custom deleter.
-// This must be in the .cpp file where PiperTTS is a complete type.
-void PiperTTSDeleter::operator()(loki::tts::PiperTTS *p) const {
-    delete p;
-}
-
 
 // --- Application State Structures and Callbacks ---
 enum class AppState {
@@ -77,8 +71,48 @@ void playback_data_callback(ma_device *pDevice, void *pOutput, const void *pInpu
     (void) pInput; // Not using input
 }
 
-// --- END MINIAUDIO PLAYBACK ---
+// --- MEMORY AUDIO PLAYBACK ---
+struct MemoryPlaybackData {
+    const char *audioData;
+    size_t audioSize;
+    size_t currentPosition;
+    std::atomic<bool> is_finished{false};
+    ma_format format;
+    ma_uint32 channels;
+    ma_uint32 sampleRate;
+};
 
+void memory_playback_data_callback(ma_device *pDevice, void *pOutput, const void *pInput, ma_uint32 frameCount) {
+    auto *pData = static_cast<MemoryPlaybackData *>(pDevice->pUserData);
+    if (pData == nullptr) {
+        return;
+    }
+
+    ma_uint32 bytesPerFrame = ma_get_bytes_per_frame(pData->format, pData->channels);
+    ma_uint32 bytesToRead = frameCount * bytesPerFrame;
+    ma_uint32 bytesRemaining = static_cast<ma_uint32>(pData->audioSize - pData->currentPosition);
+
+    if (bytesRemaining == 0) {
+        // No more data, fill with silence
+        memset(pOutput, 0, bytesToRead);
+        pData->is_finished.store(true);
+        return;
+    }
+
+    ma_uint32 bytesToCopy = std::min(bytesToRead, bytesRemaining);
+    memcpy(pOutput, pData->audioData + pData->currentPosition, bytesToCopy);
+    pData->currentPosition += bytesToCopy;
+
+    // Fill remaining with silence if we don't have enough data
+    if (bytesToCopy < bytesToRead) {
+        memset(static_cast<char *>(pOutput) + bytesToCopy, 0, bytesToRead - bytesToCopy);
+        pData->is_finished.store(true);
+    }
+
+    (void) pInput; // Not using input
+}
+
+// --- END MINIAUDIO PLAYBACK ---
 
 void data_callback(ma_device *pDevice, void *pOutput, const void *pInput, ma_uint32 frameCount) {
     auto *pData = static_cast<AppData *>(pDevice->pUserData);
@@ -89,7 +123,9 @@ void data_callback(ma_device *pDevice, void *pOutput, const void *pInput, ma_uin
 
     if (pData->state == AppState::RECORDING_COMMAND) {
         double sum_squares = 0.0;
-        for (size_t i = 0; i < frameCount; ++i) { sum_squares += samples_f32[i] * samples_f32[i]; }
+        for (size_t i = 0; i < frameCount; ++i) {
+            sum_squares += samples_f32[i] * samples_f32[i];
+        }
         double rms = std::sqrt(sum_squares / frameCount);
 
         pData->command_buffer.insert(pData->command_buffer.end(), samples_f32, samples_f32 + frameCount);
@@ -126,7 +162,6 @@ void data_callback(ma_device *pDevice, void *pOutput, const void *pInput, ma_uin
     }
 }
 
-
 // --- LokiWorker Method Implementations ---
 
 LokiWorker::LokiWorker(QObject *parent) : QObject(parent) {
@@ -142,6 +177,12 @@ LokiWorker::LokiWorker(QObject *parent) : QObject(parent) {
 
 LokiWorker::~LokiWorker() {
     stop_processing();
+
+    // Shutdown async TTS
+    if (async_tts_) {
+        async_tts_->shutdown();
+    }
+
     if (device_ && device_->pUserData) {
         // Check if device was initialized
         ma_device_uninit(device_.get());
@@ -198,7 +239,7 @@ void LokiWorker::initialize() {
     app_data_->porcupine = porcupine_;
 
     emit status_updated("Initializing Whisper...");
-    whisper_.reset(Whisper::create(WHISPER_MODEL_PATH));
+    whisper_ = Whisper::create(WHISPER_MODEL_PATH);
     if (!whisper_) {
         emit status_updated("ERROR: Failed to load Whisper model!");
         emit initialization_complete();
@@ -206,22 +247,33 @@ void LokiWorker::initialize() {
     }
     app_data_->whisper = whisper_.get();
 
-    // ADDED: Detailed logging around TTS initialization
-    std::cout << "LOKI_WORKER_LOG: About to initialize TTS..." << std::endl;
+    // UPDATED: Initialize Async TTS system
+    std::cout << "LOKI_WORKER_LOG: About to initialize Async TTS..." << std::endl;
     emit status_updated("Initializing TTS...");
     std::string espeakDataAbsPath = resolve_path("ESPEAK_DATA_PATH", "espeak-ng-data");
     SetEnvironmentVariableA("ESPEAK_DATA_PATH", espeakDataAbsPath.c_str());
     std::string piper_exe_path = (app_dir / "piper.exe").string();
     std::string piper_model_path = resolve_path("PIPER_MODEL_PATH", "models/piper/en_US-hfc_male-medium.onnx");
-    tts_.reset(new loki::tts::PiperTTS(piper_exe_path, piper_model_path, app_dir.string()));
-    if (!tts_->initialize()) {
-        std::string tts_error = tts_->getLastError();
-        emit status_updated(QString("TTS Init Failed: %1").arg(QString::fromStdString(tts_error)));
-        std::cout << "LOKI_WORKER_LOG: TTS initialization FAILED. Error: " << tts_error << std::endl;
-    } else {
-        emit status_updated("TTS initialized successfully.");
-        std::cout << "LOKI_WORKER_LOG: TTS initialization SUCCEEDED." << std::endl;
-    }
+
+    async_tts_ = std::make_unique<loki::tts::AsyncTTSManager>(
+        piper_exe_path, piper_model_path, app_dir.string(), this);
+
+    // Connect TTS signals
+    connect(async_tts_.get(), &loki::tts::AsyncTTSManager::ttsReady,
+            this, [this]() {
+                emit status_updated("TTS initialized successfully.");
+                std::cout << "LOKI_WORKER_LOG: Async TTS initialization SUCCEEDED." << std::endl;
+            });
+
+    connect(async_tts_.get(), &loki::tts::AsyncTTSManager::ttsError,
+            this, [this](const QString &error) {
+                emit status_updated(QString("TTS Init Failed: %1").arg(error));
+                std::cout << "LOKI_WORKER_LOG: Async TTS initialization FAILED: "
+                        << error.toStdString() << std::endl;
+            });
+
+    // Initialize the async TTS system
+    async_tts_->initialize();
     std::cout << "LOKI_WORKER_LOG: Finished TTS initialization block." << std::endl;
 
     emit status_updated("Initializing Embedding Model...");
@@ -233,12 +285,12 @@ void LokiWorker::initialize() {
     }
 
     emit status_updated("Initializing Classifiers...");
-    fast_classifier_ = std::make_unique<FastClassifier>(INTENTS_JSON_PATH, *embedding_model_);
+    fast_classifier_ = std::make_unique<loki::intent::FastClassifier>(INTENTS_JSON_PATH, *embedding_model_);
     nlohmann::json llm_options = {
         {"num_ctx", 1024}, {"temperature", 0.0}, {"top_k", 1}, {"top_p", 1.0}, {"max_new_tokens", 128}
     };
-    ollama_client_ = std::make_unique<OllamaClient>(OLLAMA_HOST, OLLAMA_MODEL, llm_options);
-    llm_classifier_ = std::make_unique<IntentClassifier>(*ollama_client_);
+    ollama_client_ = std::make_unique<loki::core::OllamaClient>(OLLAMA_HOST, OLLAMA_MODEL, llm_options);
+    llm_classifier_ = std::make_unique<loki::intent::IntentClassifier>(*ollama_client_);
     agent_manager_->register_agent(std::make_unique<SystemControlAgent>());
     agent_manager_->register_agent(std::make_unique<CalculationAgent>());
 
@@ -297,7 +349,7 @@ void LokiWorker::check_for_command() {
             } else {
                 emit status_updated(QString("Heard: \"%1\"").arg(QString::fromStdString(transcription)));
                 auto fast_result = fast_classifier_->classify(transcription);
-                intent::Intent intent;
+                loki::intent::Intent intent;
 
                 if (fast_result.has_match && fast_result.confidence >= 0.95f) {
                     emit status_updated("Fast path hit! Routing directly.");
@@ -307,25 +359,31 @@ void LokiWorker::check_for_command() {
                     intent = llm_classifier_->classify(transcription);
                 }
 
-                auto handle_response = [&](const std::string &text) {
+                // UPDATED: Use async TTS system
+                auto handle_response = [this](const std::string &text) {
                     if (text.empty()) return;
                     emit loki_response(QString::fromStdString(text));
-                    if (tts_ && tts_->isReady()) {
-                        const std::string wav_path_relative = "response.wav";
-                        if (tts_->synthesizeToFile(text, wav_path_relative)) {
-                            play_audio(wav_path_relative);
-                            std::filesystem::path wav_path_absolute = std::filesystem::path(
-                                                                          QCoreApplication::applicationDirPath().
-                                                                          toStdString()) / wav_path_relative;
-                            if (std::filesystem::exists(wav_path_absolute)) {
-                                std::filesystem::remove(wav_path_absolute);
-                            }
-                        } else {
-                            emit status_updated(
-                                QString("TTS Error: %1").arg(QString::fromStdString(tts_->getLastError())));
-                        }
+
+                    if (async_tts_ && async_tts_->isReady()) {
+                        // Use async synthesis with callback
+                        async_tts_->synthesizeAsync(
+                            QString::fromStdString(text),
+                            [this](bool success, const std::vector<char> &audioData, const QString &error) {
+                                if (success) {
+                                    std::cout << "LOKI_WORKER_LOG: TTS synthesis successful, playing audio..." <<
+                                            std::endl;
+                                    play_audio_from_memory(audioData);
+                                } else {
+                                    emit status_updated(QString("TTS Error: %1").arg(error));
+                                    std::cout << "LOKI_WORKER_LOG: TTS synthesis failed: " << error.toStdString() <<
+                                            std::endl;
+                                }
+                            },
+                            loki::tts::TTSPriority::HIGH
+                        );
                     } else {
                         emit status_updated("TTS not ready, skipping playback.");
+                        std::cout << "LOKI_WORKER_LOG: TTS not ready for synthesis" << std::endl;
                     }
                 };
 
@@ -382,4 +440,83 @@ void LokiWorker::play_audio(const std::string &wav_path) {
     }
     ma_device_uninit(&device);
     ma_decoder_uninit(&data.decoder);
+}
+
+void LokiWorker::play_audio_from_memory(const std::vector<char> &audioData) {
+    if (audioData.empty()) {
+        emit status_updated("No audio data to play.");
+        return;
+    }
+
+    std::cout << "LOKI_WORKER_LOG: Playing audio from memory (" << audioData.size() << " bytes)" << std::endl;
+
+    MemoryPlaybackData data;
+    data.audioData = audioData.data();
+    data.audioSize = audioData.size();
+    data.currentPosition = 0;
+    data.is_finished.store(false);
+
+    // WAV format assumptions - these should match Piper's output
+    // You might need to parse the WAV header for more accuracy
+    data.format = ma_format_s16; // 16-bit signed integer (common for WAV)
+    data.channels = 1; // Mono (Piper typically outputs mono)
+    data.sampleRate = 22050; // Common Piper sample rate (adjust if needed)
+
+    ma_device_config device_config = ma_device_config_init(ma_device_type_playback);
+    device_config.playback.format = data.format;
+    device_config.playback.channels = data.channels;
+    device_config.sampleRate = data.sampleRate;
+    device_config.dataCallback = memory_playback_data_callback;
+    device_config.pUserData = &data;
+
+    ma_device device;
+    if (ma_device_init(NULL, &device_config, &device) != MA_SUCCESS) {
+        emit status_updated("Failed to initialize memory playback device.");
+        std::cout << "LOKI_WORKER_LOG: Failed to initialize memory playback device" << std::endl;
+        return;
+    }
+
+    if (ma_device_start(&device) != MA_SUCCESS) {
+        emit status_updated("Failed to start memory playback device.");
+        std::cout << "LOKI_WORKER_LOG: Failed to start memory playback device" << std::endl;
+        ma_device_uninit(&device);
+        return;
+    }
+
+    emit status_updated("Playing response...");
+
+    // Wait for playback to complete
+    while (!data.is_finished.load()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+
+    ma_device_uninit(&device);
+    std::cout << "LOKI_WORKER_LOG: Finished playing audio from memory" << std::endl;
+}
+
+// UPDATED: Add utility methods for sync TTS if needed
+bool LokiWorker::synthesize_text_sync(const QString &text, std::vector<char> &audioData, int timeoutMs) {
+    if (!async_tts_ || !async_tts_->isReady()) {
+        std::cout << "LOKI_WORKER_LOG: TTS not ready for sync synthesis" << std::endl;
+        return false;
+    }
+
+    return async_tts_->synthesizeSync(text, audioData, timeoutMs);
+}
+
+void LokiWorker::speak_text_async(const QString &text, loki::tts::TTSPriority priority) {
+    if (!async_tts_ || !async_tts_->isReady()) {
+        std::cout << "LOKI_WORKER_LOG: TTS not ready for async synthesis" << std::endl;
+        return;
+    }
+
+    async_tts_->synthesizeAsync(text,
+                                [this](bool success, const std::vector<char> &audioData, const QString &error) {
+                                    if (success) {
+                                        play_audio_from_memory(audioData);
+                                    } else {
+                                        emit status_updated(QString("TTS Error: %1").arg(error));
+                                    }
+                                },
+                                priority);
 }

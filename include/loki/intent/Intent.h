@@ -2,7 +2,7 @@
 #include "nlohmann/json.hpp"
 #include <string>
 
-namespace intent {
+namespace loki::intent {
     struct Intent {
         std::string type = "unknown";
         std::string action;

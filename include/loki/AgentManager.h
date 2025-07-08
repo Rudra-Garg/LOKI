@@ -8,7 +8,7 @@ class AgentManager {
 public:
     void register_agent(std::unique_ptr<IAgent> agent);
 
-    std::string dispatch(const intent::Intent &intent);
+    std::string dispatch(const loki::intent::Intent &intent);
 
 private:
     std::unordered_map<std::string, std::unique_ptr<IAgent> > agents_;

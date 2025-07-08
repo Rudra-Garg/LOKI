@@ -1,6 +1,6 @@
 #pragma once
 
-#include "loki/intent/Intent.h" // Includes the intent::Intent struct
+#include "loki/intent/Intent.h" // Includes the loki::intent::Intent struct
 #include <string>
 
 /*
@@ -27,5 +27,5 @@ public:
      * @param intent The structured intent object from the classifier.
      * @return A string response for LOKI to speak back to the user.
      */
-    virtual std::string execute(const intent::Intent& intent) = 0;
+    virtual std::string execute(const loki::intent::Intent &intent) = 0;
 };

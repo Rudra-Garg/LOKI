@@ -7,7 +7,7 @@ std::string SystemControlAgent::get_name() const {
     return "system_control";
 }
 
-std::string SystemControlAgent::execute(const intent::Intent &intent) {
+std::string SystemControlAgent::execute(const loki::intent::Intent &intent) {
     if (intent.action == "launch_application") {
         if (!intent.parameters.contains("name")) {
             return "I can launch an application, but you need to tell me which one.";

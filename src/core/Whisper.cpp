@@ -8,6 +8,7 @@
 #include <vector>
 #include <string>
 #include <thread>
+#include <memory> // ADDED for std::unique_ptr
 
 // The implementation class that holds the whisper_context and other details.
 class Whisper::WhisperImpl {
@@ -77,15 +78,18 @@ public:
 
 // --- Public Wrapper Function Implementations ---
 
-Whisper *Whisper::create(const std::string &model_path) {
-    auto instance = new Whisper();
+// UPDATED: Returns a unique_ptr and manages memory correctly.
+std::unique_ptr<Whisper> Whisper::create(const std::string &model_path) {
+    // Use `new` because constructor is private. Wrap immediately in unique_ptr.
+    auto instance = std::unique_ptr<Whisper>(new Whisper());
     instance->impl_ = new WhisperImpl(model_path);
 
     if (instance->impl_->is_model_loaded()) {
-        return instance;
+        return instance; // Move the unique_ptr out.
     }
-    delete instance->impl_;
-    delete instance;
+
+    // If model loading fails, instance (and its impl_) will be destroyed
+    // automatically when the unique_ptr goes out of scope here.
     return nullptr;
 }
 
@@ -93,12 +97,11 @@ std::string Whisper::process_audio(const std::vector<float> &audio_data) {
     return impl_ ? impl_->process_audio(audio_data) : "";
 }
 
-void Whisper::destroy() {
-    delete this;
-}
+// REMOVED: destroy() method is gone.
 
 Whisper::Whisper() = default;
 
+// The destructor is already defined here, which is correct for PIMPL.
 Whisper::~Whisper() {
     delete impl_;
 }

@@ -1,11 +1,12 @@
 #include "loki/intent/IntentClassifier.h"
 #include <iostream>
 
-IntentClassifier::IntentClassifier(OllamaClient &ollama_client)
-    : ollama_client_(ollama_client) {
-    // This is the prompt engineering heart of the controller LLM.
-    // It's much stricter than our previous prompt.
-    system_prompt_ = R"(
+namespace loki::intent {
+    IntentClassifier::IntentClassifier(loki::core::OllamaClient &ollama_client)
+        : ollama_client_(ollama_client) {
+        // This is the prompt engineering heart of the controller LLM.
+        // It's much stricter than our previous prompt.
+        system_prompt_ = R"(
 You are a non‑conversational API. Your sole job is to read the user’s utterance and emit exactly one valid JSON object—nothing else.
 
 RESPONSE RULES:
@@ -44,42 +45,43 @@ User: "calculate 5 times 8"
 User: "fsdjakl fjdsa"
 {"type":"unknown","action":"","parameters":{},"confidence":0.1}
 )";
-}
-
-
-intent::Intent IntentClassifier::classify(const std::string &transcript) {
-    std::cout << "--- Classifying intent for: \"" << transcript << "\"" << std::endl;
-    std::string llm_response_str = ollama_client_.generate(system_prompt_, transcript);
-
-    intent::Intent result_intent;
-    std::string json_to_parse = llm_response_str;
-    size_t first_brace = llm_response_str.find('{');
-    size_t last_brace = llm_response_str.rfind('}');
-
-    if (first_brace != std::string::npos && last_brace != std::string::npos && last_brace > first_brace) {
-        json_to_parse = llm_response_str.substr(first_brace, last_brace - first_brace + 1);
-    }
-    try {
-        using json = nlohmann::json;
-        json parsed = json::parse(json_to_parse);
-
-        // Use .at() for required fields, which throws an exception if the key is missing.
-        result_intent.type = parsed.at("type").get<std::string>();
-        result_intent.confidence = parsed.at("confidence").get<float>();
-        result_intent.parameters = parsed.at("parameters");
-
-        // Use .value() for optional fields, providing a default value.
-        result_intent.action = parsed.value("action", "");
-    } catch (const nlohmann::json::exception &e) {
-        std::cerr << "ERROR: Failed to parse or validate LLM JSON response. " << e.what() << std::endl;
-        std::cerr << "Raw response was: " << llm_response_str << std::endl;
-
-        // Return a safe, 'unknown' intent on any failure
-        result_intent.type = "unknown";
-        result_intent.confidence = 0.0f;
-        result_intent.action = "";
-        result_intent.parameters = nlohmann::json::object();
     }
 
-    return result_intent;
+
+    loki::intent::Intent IntentClassifier::classify(const std::string &transcript) {
+        std::cout << "--- Classifying intent for: \"" << transcript << "\"" << std::endl;
+        std::string llm_response_str = ollama_client_.generate(system_prompt_, transcript);
+
+        loki::intent::Intent result_intent;
+        std::string json_to_parse = llm_response_str;
+        size_t first_brace = llm_response_str.find('{');
+        size_t last_brace = llm_response_str.rfind('}');
+
+        if (first_brace != std::string::npos && last_brace != std::string::npos && last_brace > first_brace) {
+            json_to_parse = llm_response_str.substr(first_brace, last_brace - first_brace + 1);
+        }
+        try {
+            using json = nlohmann::json;
+            json parsed = json::parse(json_to_parse);
+
+            // Use .at() for required fields, which throws an exception if the key is missing.
+            result_intent.type = parsed.at("type").get<std::string>();
+            result_intent.confidence = parsed.at("confidence").get<float>();
+            result_intent.parameters = parsed.at("parameters");
+
+            // Use .value() for optional fields, providing a default value.
+            result_intent.action = parsed.value("action", "");
+        } catch (const nlohmann::json::exception &e) {
+            std::cerr << "ERROR: Failed to parse or validate LLM JSON response. " << e.what() << std::endl;
+            std::cerr << "Raw response was: " << llm_response_str << std::endl;
+
+            // Return a safe, 'unknown' intent on any failure
+            result_intent.type = "unknown";
+            result_intent.confidence = 0.0f;
+            result_intent.action = "";
+            result_intent.parameters = nlohmann::json::object();
+        }
+
+        return result_intent;
+    }
 }

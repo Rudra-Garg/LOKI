@@ -8,7 +8,7 @@ void AgentManager::register_agent(std::unique_ptr<IAgent> agent) {
     }
 }
 
-std::string AgentManager::dispatch(const intent::Intent &intent) {
+std::string AgentManager::dispatch(const loki::intent::Intent &intent) {
     auto it = agents_.find(intent.type);
     if (it != agents_.end()) {
         return it->second->execute(intent);
