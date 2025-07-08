@@ -10,13 +10,24 @@
 
 // C-API and Class Headers
 extern "C" {
-    #include "picovoice/include/pv_porcupine.h"
+#include "picovoice/include/pv_porcupine.h"
 }
+
 #include "loki/core/Whisper.h"              // ADDED: Include for the custom deleter
 
 // Forward-declarations for other types
 struct ma_device;
-class Config;
+
+namespace loki {
+    namespace core {
+        class Config;
+    }
+
+    namespace tts {
+        class PiperTTS;
+    } // Forward-declare PiperTTS
+}
+
 class OllamaClient;
 class IntentClassifier;
 class FastClassifier;
@@ -24,7 +35,7 @@ class AgentManager;
 class EmbeddingModel;
 struct AppData;
 
-// --- FIXED: Custom Deleter for Whisper ---
+// --- Custom Deleter for Whisper ---
 struct WhisperDeleter {
     void operator()(Whisper *w) const {
         if (w) {
@@ -32,6 +43,15 @@ struct WhisperDeleter {
         }
     }
 };
+
+// --- ADDED: Custom Deleter for PiperTTS ---
+// This is required because PiperTTS is forward-declared and its definition is
+// hidden in the .cpp file (PIMPL idiom). The default deleter would require the
+// full definition of PiperTTS here, which would break the encapsulation.
+struct PiperTTSDeleter {
+    void operator()(loki::tts::PiperTTS *p) const;
+};
+
 
 class LokiWorker : public QObject {
     Q_OBJECT
@@ -57,16 +77,21 @@ signals:
 
     void wake_word_detected_signal();
 
+    void initialization_complete(); // ADDED: To signal when init is done
+
 private slots: // ADDED: Make it a slot for the timer
     void check_for_command();
 
 private:
+    void play_audio(const std::string &wav_path); // For audio playback
+
     // --- Member Variables ---
-    std::unique_ptr<Config> config_;
+    std::unique_ptr<loki::core::Config> config_;
     std::unique_ptr<OllamaClient> ollama_client_;
+    // MODIFIED: Use the custom deleter for PiperTTS
+    std::unique_ptr<loki::tts::PiperTTS, PiperTTSDeleter> tts_;
 
     std::unique_ptr<EmbeddingModel> embedding_model_;
-    // --- FIXED: Use the custom deleter for the Whisper unique_ptr ---
     std::unique_ptr<Whisper, WhisperDeleter> whisper_;
     std::unique_ptr<FastClassifier> fast_classifier_;
     std::unique_ptr<IntentClassifier> llm_classifier_;
@@ -75,7 +100,7 @@ private:
 
     std::unique_ptr<AppData> app_data_;
     std::unique_ptr<ma_device> device_;
-    pv_porcupine_t *porcupine_ = nullptr; // This is now okay because we included the header
-    QTimer *processing_timer_ = nullptr; // ADDED: Timer for the processing loop
+    pv_porcupine_t *porcupine_ = nullptr;
+    QTimer *processing_timer_ = nullptr;
     int min_command_ms_{};
 };

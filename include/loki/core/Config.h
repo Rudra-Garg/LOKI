@@ -4,21 +4,25 @@
 #include <string>
 #include <map>
 
-// A simple class to load and access key-value pairs from a .env file.
-class Config {
-public:
-    // Constructor loads settings from the specified file path.
-    explicit Config(const std::string& env_path = ".env");
+namespace loki {
+    namespace core {
+        // A simple class to load and access key-value pairs from a .env file.
+        class Config {
+        public:
+            // Constructor loads settings from the specified file path.
+            explicit Config(const std::string &env_path = ".env");
 
-    // Gets a string value for a given key.
-    // Returns a default value if the key is not found.
-    std::string get(const std::string& key, const std::string& default_value = "") const;
+            // Gets a string value for a given key.
+            // Returns a default value if the key is not found.
+            std::string get(const std::string &key, const std::string &default_value = "") const;
 
-    // Gets a float value for a given key.
-    float get_float(const std::string& key, float default_value = 0.0f) const;
+            // Gets a float value for a given key.
+            float get_float(const std::string &key, float default_value = 0.0f) const;
 
-private:
-    std::map<std::string, std::string> data;
-};
+        private:
+            std::map<std::string, std::string> data;
+        };
+    } // namespace core
+} // namespace loki
 
 #endif //LOKI_CONFIG_H

@@ -1,0 +1,17 @@
+LIBRARY pv_porcupine
+EXPORTS
+pv_free
+pv_free_error_stack
+pv_get_error_stack
+pv_get_sdk
+pv_log_disable
+pv_log_enable
+pv_porcupine_delete
+pv_porcupine_frame_length
+pv_porcupine_init
+pv_porcupine_process
+pv_sample_rate
+pv_set_home_dir
+pv_set_sdk
+pv_status_to_string
+
