@@ -15,6 +15,10 @@ public:
 
     ~MainWindow() override;
 
+    signals:
+    // Emitted when the user submits a text command from the UI.
+    void text_command_submitted(const QString &text);
+
 public slots:
     void update_status(const QString &message);
 

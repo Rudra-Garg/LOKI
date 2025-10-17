@@ -46,6 +46,7 @@ int main(int argc, char *argv[]) {
     QObject::connect(loki_worker, &LokiWorker::wake_word_detected_signal, &main_window, &MainWindow::show);
     QObject::connect(loki_worker, &LokiWorker::status_updated, &main_window, &MainWindow::update_status);
     QObject::connect(loki_worker, &LokiWorker::loki_response, &main_window, &MainWindow::display_response_and_hide);
+    QObject::connect(&main_window, &MainWindow::text_command_submitted, loki_worker, &LokiWorker::process_text_command);
 
     // ===================================================================
     // == Shutdown Sequence

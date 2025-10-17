@@ -5,6 +5,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <atomic>
 
 // Forward declarations
 struct ma_device;
@@ -58,8 +59,13 @@ public:
 
     void play_audio_from_memory(const std::vector<char> &audioData);
 
+    // Flag to coordinate voice vs. text input
+    std::atomic<bool> text_command_received_{false};
 public slots:
     void check_for_command();
+
+    // New slot to handle text commands from the GUI
+    void process_text_command(const QString &text);
 
 signals:
     void status_updated(const QString &status);
@@ -71,6 +77,8 @@ signals:
     void wake_word_detected_signal();
 
 private:
+    void process_transcription(const std::string& transcription);
+
     // Configuration and core components
     std::unique_ptr<loki::core::Config> config_;
     std::unique_ptr<AppData> app_data_;

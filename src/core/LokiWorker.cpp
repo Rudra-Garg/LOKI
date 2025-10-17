@@ -155,6 +155,7 @@ void data_callback(ma_device *pDevice, void *pOutput, const void *pInput, ma_uin
             pData->consecutive_silent_frames = 0;
             pData->has_started_speaking = false;
             wake_word_was_detected = true;
+            pData->worker->text_command_received_.store(false); // Reset flag on new wake word
         }
     }
     if (wake_word_was_detected) {
@@ -339,6 +340,14 @@ void LokiWorker::check_for_command() {
     }
 
     if (ready_to_process) {
+        // If a text command was already received and handled, discard this audio.
+        if (text_command_received_.load()) {
+            std::cout << "[LokiWorker] Text command already processed, discarding voice input." << std::endl;
+            std::lock_guard<std::mutex> lock(app_data_->mtx);
+            app_data_->state = AppState::LISTENING_FOR_WAKE_WORD;
+            return;
+        }
+
         emit status_updated("Silence detected, processing...");
         const int audio_ms = static_cast<int>(audio_to_process.size() * 1000 / pv_sample_rate());
 
@@ -348,56 +357,98 @@ void LokiWorker::check_for_command() {
                 emit status_updated("Heard nothing.");
             } else {
                 emit status_updated(QString("Heard: \"%1\"").arg(QString::fromStdString(transcription)));
-                auto fast_result = fast_classifier_->classify(transcription);
-                loki::intent::Intent intent;
-
-                if (fast_result.has_match && fast_result.confidence >= 0.95f) {
-                    emit status_updated("Fast path hit! Routing directly.");
-                    intent = {fast_result.type, fast_result.action, fast_result.parameters, fast_result.confidence};
-                } else {
-                    emit status_updated("Fast path miss. Falling back to LLM...");
-                    intent = llm_classifier_->classify(transcription);
-                }
-
-                // UPDATED: Use async TTS system
-                auto handle_response = [this](const std::string &text) {
-                    if (text.empty()) return;
-                    emit loki_response(QString::fromStdString(text));
-
-                    if (async_tts_ && async_tts_->isReady()) {
-                        // Use async synthesis with callback
-                        async_tts_->synthesizeAsync(
-                            QString::fromStdString(text),
-                            [this](bool success, const std::vector<char> &audioData, const QString &error) {
-                                if (success) {
-                                    std::cout << "LOKI_WORKER_LOG: TTS synthesis successful, playing audio..." <<
-                                            std::endl;
-                                    play_audio_from_memory(audioData);
-                                } else {
-                                    emit status_updated(QString("TTS Error: %1").arg(error));
-                                    std::cout << "LOKI_WORKER_LOG: TTS synthesis failed: " << error.toStdString() <<
-                                            std::endl;
-                                }
-                            },
-                            loki::tts::TTSPriority::HIGH
-                        );
-                    } else {
-                        emit status_updated("TTS not ready, skipping playback.");
-                        std::cout << "LOKI_WORKER_LOG: TTS not ready for synthesis" << std::endl;
-                    }
-                };
-
-                if (intent.confidence >= 0.7) {
-                    std::string response = agent_manager_->dispatch(intent);
-                    handle_response(response);
-                } else {
-                    handle_response("I'm not very confident about that. Could you please rephrase?");
-                }
+                process_transcription(transcription);
             }
         } else {
             emit status_updated(QString("Command too short (%1ms).").arg(audio_ms));
         }
+
+        // Reset state after processing is complete
+        std::lock_guard<std::mutex> lock(app_data_->mtx);
+        app_data_->state = AppState::LISTENING_FOR_WAKE_WORD;
     }
+}
+
+void LokiWorker::process_transcription(const std::string& transcription) {
+    auto fast_result = fast_classifier_->classify(transcription);
+    loki::intent::Intent intent;
+
+    // --- VERBOSE LOGGING: FAST CLASSIFIER ---
+    std::cout << "\n--- Fast Classifier Result ---" << std::endl;
+    std::cout << "  - Match Found: " << (fast_result.has_match ? "Yes" : "No") << std::endl;
+    std::cout << "  - Confidence:  " << fast_result.confidence << std::endl;
+    std::cout << "  - Type:        " << fast_result.type << std::endl;
+    std::cout << "  - Action:      " << fast_result.action << std::endl;
+    std::cout << "  - Parameters:  " << fast_result.parameters.dump() << std::endl;
+    std::cout << "------------------------------" << std::endl;
+
+    if (fast_result.has_match && fast_result.confidence >= 0.90f) { // Slightly lowered threshold
+        std::cout << "[LokiWorker] DECISION: Using fast path classification." << std::endl;
+        intent = {fast_result.type, fast_result.action, fast_result.parameters, fast_result.confidence};
+    } else {
+        std::cout << "[LokiWorker] DECISION: Fast path miss or low confidence. Falling back to LLM..." << std::endl;
+        intent = llm_classifier_->classify(transcription);
+        // --- VERBOSE LOGGING: LLM CLASSIFIER ---
+        std::cout << "\n--- LLM Classifier Result ---" << std::endl;
+        std::cout << "  - Confidence:  " << intent.confidence << std::endl;
+        std::cout << "  - Type:        " << intent.type << std::endl;
+        std::cout << "  - Action:      " << intent.action << std::endl;
+        std::cout << "  - Parameters:  " << intent.parameters.dump() << std::endl;
+        std::cout << "-----------------------------" << std::endl;
+    }
+
+    // UPDATED: Use async TTS system
+    auto handle_response = [this](const std::string &text) {
+        if (text.empty()) return;
+        emit loki_response(QString::fromStdString(text));
+
+        if (async_tts_ && async_tts_->isReady()) {
+            // Use async synthesis with callback
+            async_tts_->synthesizeAsync(
+                QString::fromStdString(text),
+                [this](bool success, const std::vector<char> &audioData, const QString &error) {
+                    if (success) {
+                        std::cout << "LOKI_WORKER_LOG: TTS synthesis successful, playing audio..." <<
+                                std::endl;
+                        play_audio_from_memory(audioData);
+                    } else {
+                        emit status_updated(QString("TTS Error: %1").arg(error));
+                        std::cout << "LOKI_WORKER_LOG: TTS synthesis failed: " << error.toStdString() <<
+                                std::endl;
+                    }
+                },
+                loki::tts::TTSPriority::HIGH
+            );
+        } else {
+            emit status_updated("TTS not ready, skipping playback.");
+            std::cout << "LOKI_WORKER_LOG: TTS not ready for synthesis" << std::endl;
+        }
+    };
+
+    if (intent.confidence >= 0.7) {
+        std::string response = agent_manager_->dispatch(intent);
+        handle_response(response);
+    } else {
+        handle_response("I'm not very confident about that. Could you please rephrase?");
+    }
+}
+
+void LokiWorker::process_text_command(const QString &text) {
+    std::cout << "[LokiWorker] Text command received: \"" << text.toStdString() << "\"" << std::endl;
+    emit status_updated(QString("Text command: \"%1\"").arg(text));
+
+    // Set the flag to prevent voice processing from running
+    text_command_received_.store(true);
+
+    // Immediately stop listening and clear the audio buffer
+    {
+        std::lock_guard<std::mutex> lock(app_data_->mtx);
+        app_data_->state = AppState::LISTENING_FOR_WAKE_WORD;
+        app_data_->command_buffer.clear();
+    }
+
+    // Process the text command directly
+    process_transcription(text.toStdString());
 }
 
 void LokiWorker::play_audio(const std::string &wav_path) {

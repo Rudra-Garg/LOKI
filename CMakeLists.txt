@@ -14,7 +14,18 @@ set(CMAKE_AUTOUIC ON)
 
 # Find the required Qt6 packages
 find_package(Qt6 REQUIRED COMPONENTS Widgets Core Gui)
-
+# ===================================================================
+# == Testing Configuration (Google Test)
+# ===================================================================
+include(FetchContent)
+FetchContent_Declare(
+        googletest
+        URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
+)
+# For Windows: Prevent gtest from using /Zc:__cplusplus
+set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(googletest)
+# ===================================================================
 # ===================================================================
 # == Third-Party Library Definitions
 # ===================================================================
@@ -24,10 +35,11 @@ target_include_directories(tinyexpr PUBLIC third-party/tinyexpr)
 # ===================================================================
 # == Source Files Definition
 # ===================================================================
+# NOTE: src/main.cpp is EXCLUDED from this list as it belongs only to the executable.
 set(CORE_SOURCES
         # --- Core Application Logic ---
-        src/main.cpp
         src/AgentManager.cpp
+        src/agents/windows/WindowsSystemControl.cpp
         src/agents/CalculationAgent.cpp
         src/agents/SystemControlAgent.cpp
         src/core/Config.cpp
@@ -38,7 +50,6 @@ set(CORE_SOURCES
         src/intent/IntentClassifier.cpp
 
         # --- Qt UI and Worker ---
-        src/gui/MainWindow.cpp
         src/core/LokiWorker.cpp
 )
 
@@ -51,7 +62,6 @@ set(TTS_SOURCES
 
 set(HEADER_FILES
         # --- Core Headers ---
-        include/loki/gui/MainWindow.h
         include/loki/core/LokiWorker.h
 
         # --- TTS Headers ---
@@ -61,24 +71,15 @@ set(HEADER_FILES
 )
 
 # ===================================================================
-# == Main Executable Target: loki
+# == Core Logic Library: loki_lib
 # ===================================================================
-qt_add_executable(loki
+add_library(loki_lib
         ${CORE_SOURCES}
         ${TTS_SOURCES}
         ${HEADER_FILES}
 )
 
-if (MSVC)
-    target_compile_options(loki PRIVATE "/FI${CMAKE_CURRENT_SOURCE_DIR}/include/msvc_compat.h")
-endif ()
-
-# ===================================================================
-# == Dependencies and Linking for 'loki'
-# ===================================================================
-
-# --- Include Directories for 'loki' ---
-target_include_directories(loki PUBLIC
+target_include_directories(loki_lib PUBLIC
         "include"
         "third-party"
         "third-party/picovoice/include"
@@ -87,111 +88,131 @@ target_include_directories(loki PUBLIC
         "third-party/ggml/include"
 )
 
-# --- Linker Search Directories for 'loki' ---
-target_link_directories(loki PRIVATE
+target_link_directories(loki_lib PUBLIC
         "${CMAKE_CURRENT_SOURCE_DIR}/third-party/ggml/lib"
         "${CMAKE_CURRENT_SOURCE_DIR}/third-party/llama_cpp/lib"
         "${CMAKE_CURRENT_SOURCE_DIR}/third-party/whisper_cpp/lib"
         "${CMAKE_CURRENT_SOURCE_DIR}/third-party/picovoice/lib"
 )
 
-# --- Link Libraries for 'loki' ---
-target_link_libraries(loki PRIVATE
+target_link_libraries(loki_lib PUBLIC
         Qt6::Widgets
         Qt6::Core
         Qt6::Gui
-        tinyexpr # Our self-built library
-        ws2_32   # Windows Socket library
+        tinyexpr
+        ws2_32
+        pv_porcupine.lib
+        whisper.lib
+        llama.lib
+        winmm.lib
+        ole32.lib
+        PowrProf.lib
 )
 
-# MSVC FIX: Use compiler-specific linking for third-party libraries.
 if (MSVC)
-    target_link_libraries(loki PRIVATE
-            pv_porcupine.lib
-            whisper.lib
-            llama.lib
-            winmm.lib # ADDED: For miniaudio playback functionality
-    )
-else ()
-    target_link_libraries(loki PRIVATE
-            pv_porcupine
-            whisper
-            llama
-    )
+    target_compile_options(loki_lib PRIVATE "/FI${CMAKE_CURRENT_SOURCE_DIR}/include/msvc_compat.h")
 endif ()
 
 # ===================================================================
-# == Post-Build Commands for 'loki'
+# == Main Executable Target: loki
 # ===================================================================
-# IMPORTANT: The order of POST_BUILD commands matters.
-# We run windeployqt FIRST to copy Qt DLLs into a clean directory.
-# Then, we copy our own third-party DLLs and assets. This avoids
-# potential conflicts where windeployqt might crash if it encounters
-# DLLs compiled with different runtimes (e.g., release vs. debug).
+qt_add_executable(loki
+        src/main.cpp
+        src/gui/MainWindow.cpp
 
-# --- Step 1: Deploy Qt Dependencies using windeployqt ---
-find_program(WINDEPLOYQT_PATH windeployqt HINTS "${CMAKE_PREFIX_PATH}/bin")
+        include/loki/gui/MainWindow.h
+        )
+target_link_libraries(loki PRIVATE loki_lib)
 
-if (WINDEPLOYQT_PATH)
-    message(STATUS "Found windeployqt: ${WINDEPLOYQT_PATH}")
-    add_custom_command(
-            TARGET loki POST_BUILD
-            COMMAND "${WINDEPLOYQT_PATH}"
-            --dir "$<TARGET_FILE_DIR:loki>"
-            "$<TARGET_FILE:loki>"
-            --no-translations
-            COMMENT "Running windeployqt to deploy Qt dependencies..."
-    )
-else ()
-    message(WARNING "windeployqt.exe not found. Qt DLLs will not be deployed automatically.")
-endif ()
+# ===================================================================
+# == Asset Deployment Function
+# ===================================================================
+# This function wraps all the asset copying logic so it can be reused
+# for both the main executable and the test executable.
+function(DEPLOY_LOKI_TARGET target_name)
+    # --- Step 1: Deploy Qt Dependencies using windeployqt ---
+    find_program(WINDEPLOYQT_PATH windeployqt HINTS "${CMAKE_PREFIX_PATH}/bin")
+    if (WINDEPLOYQT_PATH)
+        add_custom_command(
+                TARGET ${target_name} POST_BUILD
+                COMMAND "${WINDEPLOYQT_PATH}" --dir "$<TARGET_FILE_DIR:${target_name}>" "$<TARGET_FILE:${target_name}>" --no-translations
+                COMMENT "Running windeployqt for ${target_name}..."
+        )
+    endif ()
 
-# --- Step 2: Copy all other runtime assets ---
-function(COPY_RUNTIME_ASSET target_name asset_path)
+    # --- Step 2: Copy all other runtime assets ---
     add_custom_command(TARGET ${target_name} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${asset_path}"
-            $<TARGET_FILE_DIR:${target_name}>
-    )
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/.env" $<TARGET_FILE_DIR:${target_name}>)
+    add_custom_command(TARGET ${target_name} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/third-party/ggml/lib/ggml.dll" $<TARGET_FILE_DIR:${target_name}>)
+    add_custom_command(TARGET ${target_name} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/third-party/ggml/lib/ggml-base.dll" $<TARGET_FILE_DIR:${target_name}>)
+    add_custom_command(TARGET ${target_name} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/third-party/ggml/lib/ggml-cpu.dll" $<TARGET_FILE_DIR:${target_name}>)
+    add_custom_command(TARGET ${target_name} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/third-party/llama_cpp/lib/llama.dll" $<TARGET_FILE_DIR:${target_name}>)
+    add_custom_command(TARGET ${target_name} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/third-party/whisper_cpp/lib/whisper.dll" $<TARGET_FILE_DIR:${target_name}>)
+    add_custom_command(TARGET ${target_name} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/third-party/picovoice/lib/pv_porcupine.dll" $<TARGET_FILE_DIR:${target_name}>)
+    add_custom_command(TARGET ${target_name} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/third-party/picovoice/lib/porcupine_params.pv" $<TARGET_FILE_DIR:${target_name}>)
+    add_custom_command(TARGET ${target_name} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/models/porcupine/Hey-Loki.ppn" $<TARGET_FILE_DIR:${target_name}>)
+    add_custom_command(TARGET ${target_name} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/models/whisper/ggml-base.en.bin" $<TARGET_FILE_DIR:${target_name}>)
+    add_custom_command(TARGET ${target_name} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/models/embedding/all-MiniLM-L6-v2.Q4_K_S.gguf" $<TARGET_FILE_DIR:${target_name}>)
+    add_custom_command(TARGET ${target_name} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/models/embedding/vocab.txt" $<TARGET_FILE_DIR:${target_name}>)
+    add_custom_command(TARGET ${target_name} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/data/intents.json" $<TARGET_FILE_DIR:${target_name}>)
+
+    # --- Step 3: Copy Piper TTS Assets ---
+    add_custom_command(TARGET ${target_name} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/third-party/piper/lib/piper.exe" $<TARGET_FILE_DIR:${target_name}>)
+    add_custom_command(TARGET ${target_name} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/third-party/piper/lib/piper_phonemize.dll" $<TARGET_FILE_DIR:${target_name}>)
+    add_custom_command(TARGET ${target_name} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/third-party/piper/lib/espeak-ng.dll" $<TARGET_FILE_DIR:${target_name}>)
+    add_custom_command(TARGET ${target_name} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/third-party/piper/lib/onnxruntime.dll" $<TARGET_FILE_DIR:${target_name}>)
+    add_custom_command(TARGET ${target_name} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/third-party/piper/lib/onnxruntime_providers_shared.dll" $<TARGET_FILE_DIR:${target_name}>)
+
+    add_custom_command(TARGET ${target_name} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/third-party/piper/share/espeak-ng-data" "$<TARGET_FILE_DIR:${target_name}>/espeak-ng-data")
+    add_custom_command(TARGET ${target_name} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/models/piper" "$<TARGET_FILE_DIR:${target_name}>/models/piper")
 endfunction()
 
-# Copy all existing runtime assets to the build directory
-COPY_RUNTIME_ASSET(loki "${CMAKE_CURRENT_SOURCE_DIR}/.env")
-COPY_RUNTIME_ASSET(loki "${CMAKE_CURRENT_SOURCE_DIR}/third-party/ggml/lib/ggml.dll")
-COPY_RUNTIME_ASSET(loki "${CMAKE_CURRENT_SOURCE_DIR}/third-party/ggml/lib/ggml-base.dll")
-COPY_RUNTIME_ASSET(loki "${CMAKE_CURRENT_SOURCE_DIR}/third-party/ggml/lib/ggml-cpu.dll")
-COPY_RUNTIME_ASSET(loki "${CMAKE_CURRENT_SOURCE_DIR}/third-party/llama_cpp/lib/llama.dll")
-COPY_RUNTIME_ASSET(loki "${CMAKE_CURRENT_SOURCE_DIR}/third-party/whisper_cpp/lib/whisper.dll")
-COPY_RUNTIME_ASSET(loki "${CMAKE_CURRENT_SOURCE_DIR}/third-party/picovoice/lib/pv_porcupine.dll")
-COPY_RUNTIME_ASSET(loki "${CMAKE_CURRENT_SOURCE_DIR}/third-party/picovoice/lib/porcupine_params.pv")
-COPY_RUNTIME_ASSET(loki "${CMAKE_CURRENT_SOURCE_DIR}/models/porcupine/Hey-Loki.ppn")
-COPY_RUNTIME_ASSET(loki "${CMAKE_CURRENT_SOURCE_DIR}/models/whisper/ggml-base.en.bin")
-COPY_RUNTIME_ASSET(loki "${CMAKE_CURRENT_SOURCE_DIR}/models/embedding/all-MiniLM-L6-v2.Q4_K_S.gguf")
-COPY_RUNTIME_ASSET(loki "${CMAKE_CURRENT_SOURCE_DIR}/models/embedding/vocab.txt")
-COPY_RUNTIME_ASSET(loki "${CMAKE_CURRENT_SOURCE_DIR}/data/intents.json")
+# Deploy assets for the main application
+DEPLOY_LOKI_TARGET(loki)
 
 # ===================================================================
-# == Piper TTS Runtime Assets
+# == Test Executable Target: loki_tests
 # ===================================================================
-# Copy Piper TTS executable and dependencies
-COPY_RUNTIME_ASSET(loki "${CMAKE_CURRENT_SOURCE_DIR}/third-party/piper/lib/piper.exe")
-COPY_RUNTIME_ASSET(loki "${CMAKE_CURRENT_SOURCE_DIR}/third-party/piper/lib/piper_phonemize.dll")
-COPY_RUNTIME_ASSET(loki "${CMAKE_CURRENT_SOURCE_DIR}/third-party/piper/lib/espeak-ng.dll")
-COPY_RUNTIME_ASSET(loki "${CMAKE_CURRENT_SOURCE_DIR}/third-party/piper/lib/onnxruntime.dll")
-COPY_RUNTIME_ASSET(loki "${CMAKE_CURRENT_SOURCE_DIR}/third-party/piper/lib/onnxruntime_providers_shared.dll")
+if (BUILD_TESTING)
+    enable_testing()
 
-# Copy espeak-ng-data directory
-add_custom_command(TARGET loki POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_CURRENT_SOURCE_DIR}/third-party/piper/share/espeak-ng-data"
-        "$<TARGET_FILE_DIR:loki>/espeak-ng-data"
-        COMMENT "Copying espeak-ng-data directory"
-)
+    add_executable(loki_tests
+            tests/main.cpp
+            tests/test_calculation_agent.cpp
+            tests/test_system_control_agent.cpp
+            tests/test_system_control_integration.cpp
+    )
 
-# Copy Piper TTS models
-add_custom_command(TARGET loki POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_CURRENT_SOURCE_DIR}/models/piper"
-        "$<TARGET_FILE_DIR:loki>/models/piper"
-        COMMENT "Copying Piper TTS models"
-)
+    target_link_libraries(loki_tests PRIVATE loki_lib gtest_main)
+
+    target_include_directories(loki_tests PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/include"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests" # Allow #include "mocks/MockSystemControl.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/third-party"
+    )
+
+    # Deploy assets for the test executable as well
+    DEPLOY_LOKI_TARGET(loki_tests)
+
+    include(GoogleTest)
+    gtest_discover_tests(loki_tests)
+endif ()

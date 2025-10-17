@@ -208,13 +208,17 @@ namespace loki::tts {
     PiperTTS::~PiperTTS() {
         if (pImpl->hStdinWrite) CloseHandle(pImpl->hStdinWrite);
         if (pImpl->hStderrRead) CloseHandle(pImpl->hStderrRead);
-        if (pImpl->isRunning && pImpl->hProcess) {
-            if (WaitForSingleObject(pImpl->hProcess, 500) == WAIT_TIMEOUT) {
+        if (pImpl->hStdoutRead) CloseHandle(pImpl->hStdoutRead);
+
+        if (pImpl->hProcess) {
+            std::cout << "TTS_IMPL_LOG: Cleaning up Piper process handle." << std::endl;
+            // Forcefully terminate the process to prevent stale instances.
+            if (pImpl->isProcessRunning()) {
+                std::cout << "TTS_IMPL_LOG: Piper process is still running. Terminating." << std::endl;
                 TerminateProcess(pImpl->hProcess, 1);
             }
             CloseHandle(pImpl->hProcess);
         }
-        if (pImpl->hStdoutRead) CloseHandle(pImpl->hStdoutRead);
     }
 
     bool PiperTTS::initialize() {

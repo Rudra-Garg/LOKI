@@ -12,7 +12,7 @@ You are a non‑conversational API. Your sole job is to read the user’s uttera
 RESPONSE RULES:
 1. Output **only** a single, raw JSON object. No markdown, no explanations, no extra keys.
 2. JSON **must** contain exactly these four keys, in any order:
-   • "type"       – one of: "system_control", "search", "general", "calculation", "unknown"
+   • "type"       – (string) one of: "system_control", "search", "general", "calculation", "unknown"
    • "action"     – see schema below
    • "parameters" – an object ({} if none)
    • "confidence" – a float between 0.0 and 1.0
@@ -51,7 +51,7 @@ User: "fsdjakl fjdsa"
     loki::intent::Intent IntentClassifier::classify(const std::string &transcript) {
         std::cout << "--- Classifying intent for: \"" << transcript << "\"" << std::endl;
         std::string llm_response_str = ollama_client_.generate(system_prompt_, transcript);
-
+        std::cout << "[IntentClassifier] Raw LLM Response: " << llm_response_str << std::endl;
         loki::intent::Intent result_intent;
         std::string json_to_parse = llm_response_str;
         size_t first_brace = llm_response_str.find('{');
@@ -64,12 +64,9 @@ User: "fsdjakl fjdsa"
             using json = nlohmann::json;
             json parsed = json::parse(json_to_parse);
 
-            // Use .at() for required fields, which throws an exception if the key is missing.
-            result_intent.type = parsed.at("type").get<std::string>();
-            result_intent.confidence = parsed.at("confidence").get<float>();
-            result_intent.parameters = parsed.at("parameters");
-
-            // Use .value() for optional fields, providing a default value.
+            result_intent.type = parsed.value("type", "unknown");
+            result_intent.confidence = parsed.value("confidence", 0.1f); // Default to low confidence
+            result_intent.parameters = parsed.value("parameters", nlohmann::json::object());
             result_intent.action = parsed.value("action", "");
         } catch (const nlohmann::json::exception &e) {
             std::cerr << "ERROR: Failed to parse or validate LLM JSON response. " << e.what() << std::endl;
